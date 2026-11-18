@@ -1,0 +1,22 @@
+{
+  "name": "http-lab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A teaching-oriented raw HTTP/1.x lab built with Electron and Node.js.",
+  "workspaces": ["client-core", "server", "app"],
+  "scripts": {
+    "build": "npm run build --workspace client-core && npm run build --workspace server && npm run build --workspace app",
+    "build:main": "npm run build --workspace client-core && npm run build --workspace server && npm run build:main --workspace app",
+    "dev": "npm run build:main && npm run dev --workspace app",
+    "start": "npm run build && npm run start --workspace app",
+    "server": "npm run build --workspace server && npm run start --workspace server",
+    "test": "npm run test --workspaces",
+    "typecheck": "npm run typecheck --workspaces"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "^44.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  }
+}

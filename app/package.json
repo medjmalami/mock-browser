@@ -1,0 +1,30 @@
+{
+  "name": "@http-lab/app",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "npm run build:main && npm run build:renderer",
+    "build:main": "tsc -p tsconfig.json",
+    "build:renderer": "vite build --config vite.config.ts",
+    "dev": "node dev-launcher.cjs",
+    "dev:renderer": "vite --host 127.0.0.1 --config vite.config.ts",
+    "start:electron": "ELECTRON_RENDERER_URL=http://127.0.0.1:5173 electron dist/main.js",
+    "start": "electron dist/main.js",
+    "test": "node --test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@http-lab/client-core": "0.1.0",
+    "@http-lab/server": "0.1.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^44.0.0",
+    "vite": "^6.0.5"
+  }
+}

@@ -1,0 +1,54 @@
+# HTTP Lab
+
+HTTP Lab is a small Electron desktop browser/HTTP client for demonstrating the HTTP protocol in a university course. It exposes the request line, exact headers, CRLF framing, body framing, TCP reuse, cookies, cache validators, proxy hops, authentication challenges, and connection lifetime instead of hiding them behind browser APIs.
+
+## Run
+
+Requirements: Node.js 20+ and npm. The project uses npm workspaces.
+
+```bash
+npm install
+npm run dev       # Vite renderer + Electron + in-process lab servers
+npm start         # production renderer + Electron
+npm run server    # standalone origin, proxy, and echo services
+npm test
+```
+
+Ports are configurable with `HTTP_LAB_ORIGIN_PORT`, `HTTP_LAB_PROXY_PORT`, and `HTTP_LAB_ECHO_PORT`. Services bind to `127.0.0.1` only. The standalone server defaults are 8080, 8888, and 9000. The Electron app defaults its echo service to 9001 so it can coexist with Docker services commonly mapped to port 9000; set `HTTP_LAB_ECHO_PORT=9000` when the course port is free.
+
+## Project layout
+
+- `server/` contains the handwritten origin server, allow-listed proxy, TCP echo service, static resources, CRUD/session/auth routes, cache behavior, and structured logs. It does not use `node:http`, Express, `fetch`, or XMLHttpRequest.
+- `client-core/` contains the request serializer, incremental parser, raw socket client, connection pool, pipelining, redirect/auth helpers, cache, cookie jar, and DNS records.
+- `app/` contains the Electron main process, secure preload bridge, and React/Vite teaching interface.
+- `docs/ARCHITECTURE.md` is the one-page process/data-flow note.
+- `DEMO.md` is a short professor-facing demonstration script.
+
+## Design decisions and assumptions
+
+- Networking is owned by Electron's main process or the standalone server. The renderer has `contextIsolation: true`, `nodeIntegration: false`, and a sandboxed preload bridge.
+- The app starts the three local services in-process. `npm run server` starts the same services without Electron for curl-based demonstrations.
+- The Electron app enables proxy Basic auth by default with `proxy` / `proxy` so the 407 scenario is immediately demonstrable; standalone mode remains unauthenticated unless `PROXY_AUTH_USER` and `PROXY_AUTH_PASSWORD` are set.
+- URLs used by the proxy are HTTP absolute-form requests. CONNECT is restricted to the local web server and echo service; arbitrary destinations are rejected.
+- `300 Multiple Choices` is displayed for manual inspection. 301/302/303 follow when redirects are enabled, with a five-hop default limit and automatic `Referer`.
+- Local caching is in-memory and shared by requests made by the client instance. A fresh hit emits no socket events. Stale entries trigger validators and a 304 reuses the stored decoded body.
+- Session state, item CRUD, cache state, and generated resources are in-memory so every run starts clean and works offline.
+- Generated images are small deterministic assets so page/image connection behavior can be tested without external files.
+- TLS support uses Node `tls` as an optional extension. The course scenarios and local backend are HTTP/1.x over raw TCP.
+
+## Security boundaries
+
+The renderer cannot access Node or create sockets. Response HTML is rendered only inside an iframe with `sandbox` and no scripts. Server/proxy sockets bind to loopback. Proxy credentials are consumed by the proxy and are never forwarded to the origin. The UI is intended for local teaching scenarios, not arbitrary browsing.
+
+## Tests and curl
+
+The test suite covers incremental parsing, split packets, Content-Length, chunked responses, HEAD/304 no-body rules, cookie matching, cache freshness, connection reuse/pipelining, and service smoke behavior.
+
+With `npm run server` in one terminal:
+
+```bash
+curl -v http://127.0.0.1:8080/
+curl -v -X POST -H 'Content-Type: application/x-www-form-urlencoded' --data 'name=cli' http://127.0.0.1:8080/items
+curl -v -I http://127.0.0.1:8080/
+curl -v -X TRACE http://127.0.0.1:8080/
+```
