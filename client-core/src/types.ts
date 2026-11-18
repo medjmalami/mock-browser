@@ -3,6 +3,7 @@ import type { Socket } from 'node:net';
 export type HttpVersion = 'HTTP/1.0' | 'HTTP/1.1';
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'CONNECT' | 'TRACE';
 export type Header = { name: string; value: string };
+export type RequestBody = string | Buffer | Uint8Array;
 
 export type ChunkRecord = {
   sizeHex: string;
@@ -88,7 +89,7 @@ export type RequestOptions = {
   method?: HttpMethod | string;
   version?: HttpVersion;
   headers?: Header[] | Record<string, string>;
-  body?: string | Buffer;
+  body?: RequestBody;
   cache?: boolean;
   cookies?: boolean;
   autoRedirect?: boolean;
@@ -118,6 +119,8 @@ export type Exchange = {
   id: string;
   request: SerializedRequest;
   response?: ParsedResponse;
+  /** Effective representation reused after a network 304; response remains the wire 304. */
+  cacheResponse?: ParsedResponse;
   attempts: ExchangeAttempt[];
   timeline: TimelineEvent[];
   redirectChain: string[];
@@ -151,10 +154,12 @@ export type ConnectionInfo = {
 export type CacheEntry = {
   key: string;
   url: string;
+  version?: string;
   statusCode: number;
   reason: string;
   headers: Header[];
   body: Buffer;
+  compressedBody?: Buffer;
   storedAt: number;
   expiresAt?: number;
   lastModified?: string;

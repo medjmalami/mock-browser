@@ -160,35 +160,45 @@ function statusLine(buffer: Buffer): { version: string; statusCode: number; reas
 }
 
 export function parseCompleteResponse(buffer: Buffer, requestMethod?: string, connectionEnded = true): ParsedWireResponse {
-  const headerEnd = buffer.indexOf(HEADER_END);
-  if (headerEnd < 0) throw new ProtocolError('incomplete response headers', 'INCOMPLETE');
-  const { version, statusCode, reason, headerBytes: statusBytes } = statusLine(buffer);
-  const lines = buffer.subarray(statusBytes, headerEnd).toString('latin1').split('\r\n');
-  const headers = parseHeaders(lines);
-  const start = headerEnd + HEADER_END.length;
-  const noBody = requestMethod?.toUpperCase() === 'HEAD' || statusCode === 204 || statusCode === 205 || statusCode === 304 || (statusCode >= 100 && statusCode < 200);
-  const chunked = isChunked(headers);
-  const length = parseContentLength(headers);
-  let body: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-  let chunks: ChunkRecord[] = [];
-  let trailers: Header[] = [];
-  let consumed = start;
-  if (!noBody && chunked) {
-    const parsed = parseChunked(buffer, start);
-    if (!parsed) throw new ProtocolError('incomplete chunked response', 'INCOMPLETE');
-    ({ body, chunks, trailers, consumed } = parsed);
-  } else if (!noBody && length !== undefined) {
-    if (buffer.length < start + length) throw new ProtocolError('incomplete Content-Length response', 'INCOMPLETE');
-    body = Buffer.from(buffer.subarray(start, start + length));
-    consumed = start + length;
-  } else if (!noBody) {
-    if (!connectionEnded) throw new ProtocolError('response has no message framing', 'INCOMPLETE');
-    body = Buffer.from(buffer.subarray(start));
-    consumed = buffer.length;
+  const interim: Array<{ version: string; statusCode: number; reason: string; headers: Header[] }> = [];
+  let offset = 0;
+  while (true) {
+    const headerEnd = buffer.indexOf(HEADER_END, offset);
+    if (headerEnd < 0) throw new ProtocolError('incomplete response headers', 'INCOMPLETE');
+    const { version, statusCode, reason, headerBytes: statusBytes } = statusLine(buffer.subarray(offset));
+    const absoluteStatusBytes = offset + statusBytes;
+    const lines = buffer.subarray(absoluteStatusBytes, headerEnd).toString('latin1').split('\r\n');
+    const headers = parseHeaders(lines);
+    const start = headerEnd + HEADER_END.length;
+    if (statusCode >= 100 && statusCode < 200 && statusCode !== 101) {
+      interim.push({ version, statusCode, reason, headers });
+      offset = start;
+      continue;
+    }
+    const noBody = requestMethod?.toUpperCase() === 'HEAD' || statusCode === 204 || statusCode === 205 || statusCode === 304 || (statusCode >= 100 && statusCode < 200);
+    const chunked = isChunked(headers);
+    const length = parseContentLength(headers);
+    let body: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    let chunks: ChunkRecord[] = [];
+    let trailers: Header[] = [];
+    let consumed = start;
+    if (!noBody && chunked) {
+      const parsed = parseChunked(buffer, start);
+      if (!parsed) throw new ProtocolError('incomplete chunked response', 'INCOMPLETE');
+      ({ body, chunks, trailers, consumed } = parsed);
+    } else if (!noBody && length !== undefined) {
+      if (buffer.length < start + length) throw new ProtocolError('incomplete Content-Length response', 'INCOMPLETE');
+      body = Buffer.from(buffer.subarray(start, start + length));
+      consumed = start + length;
+    } else if (!noBody) {
+      if (!connectionEnded) throw new ProtocolError('response has no message framing', 'INCOMPLETE');
+      body = Buffer.from(buffer.subarray(start));
+      consumed = buffer.length;
+    }
+    const connection = (getHeader(headers, 'Connection') ?? '').toLowerCase();
+    const connectionClose = connection.includes('close') || (version === 'HTTP/1.0' && !connection.includes('keep-alive'));
+    return { version, statusCode, reason, headers, body, raw: Buffer.from(buffer.subarray(0, consumed)), chunks, trailers, usedChunked: chunked, connectionClose, interim: interim.length ? interim : undefined };
   }
-  const connection = (getHeader(headers, 'Connection') ?? '').toLowerCase();
-  const connectionClose = connection.includes('close') || (version === 'HTTP/1.0' && !connection.includes('keep-alive'));
-  return { version, statusCode, reason, headers, body, raw: Buffer.from(buffer.subarray(0, consumed)), chunks, trailers, usedChunked: chunked, connectionClose };
 }
 
 export function serializeHeaders(headers: Header[]): Buffer {
@@ -199,9 +209,11 @@ export function serializeResponse(version: string, spec: ResponseSpec, defaultCo
   const body = spec.body === undefined ? Buffer.alloc(0) : Buffer.isBuffer(spec.body) ? spec.body : Buffer.from(spec.body);
   const headers = cloneHeaders(spec.headers);
   if (!hasHeader(headers, 'Content-Type')) headers.push(header('Content-Type', defaultContentType));
-  if (!hasHeader(headers, 'Content-Length') && !hasHeader(headers, 'Transfer-Encoding')) headers.push(header('Content-Length', String(body.length)));
+  const statusHasNoBody = (spec.statusCode >= 100 && spec.statusCode < 200) || spec.statusCode === 204 || spec.statusCode === 205 || spec.statusCode === 304;
+  const statusHasNoContentLength = (spec.statusCode >= 100 && spec.statusCode < 200) || spec.statusCode === 204 || spec.statusCode === 304;
+  if (!hasHeader(headers, 'Content-Length') && !hasHeader(headers, 'Transfer-Encoding') && !statusHasNoContentLength) headers.push(header('Content-Length', String(statusHasNoBody ? 0 : body.length)));
   const reason = spec.reason ?? reasonPhrase(spec.statusCode);
-  return Buffer.concat([Buffer.from(`${version} ${spec.statusCode} ${reason}\r\n`, 'latin1'), serializeHeaders(headers), Buffer.from('\r\n', 'latin1'), body]);
+  return Buffer.concat([Buffer.from(`${version} ${spec.statusCode} ${reason}\r\n`, 'latin1'), serializeHeaders(headers), Buffer.from('\r\n', 'latin1'), statusHasNoBody ? Buffer.alloc(0) : body]);
 }
 
 export function serializeChunkedResponse(version: string, spec: ResponseSpec, defaultContentType = 'text/plain; charset=utf-8'): Buffer {

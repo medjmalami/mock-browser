@@ -24,6 +24,12 @@ Ports are configurable with `HTTP_LAB_ORIGIN_PORT`, `HTTP_LAB_PROXY_PORT`, and `
 - `docs/ARCHITECTURE.md` is the one-page process/data-flow note.
 - `DEMO.md` is a short professor-facing demonstration script.
 
+## Postman-style request editing
+
+The Request panel supports ordered custom headers: add any header name/value, disable a row without deleting it, or remove it before sending. Body modes include raw text, form-urlencoded, JSON, and binary/image. Choosing a local file reads it in the sandboxed renderer and sends its `Uint8Array` bytes through the typed preload bridge; the request still receives an explicit `Content-Length` and remains visible in the raw-wire view. The selected media type is added as `Content-Type` and can be edited like any other header.
+
+For an offline upload demonstration, use `POST http://127.0.0.1:8080/upload`, choose **binary / image**, and select a file. The local origin returns JSON containing the received byte count, content type, optional `X-File-Name`/`Content-Disposition` filename, and SHA-256 digest.
+
 ## Design decisions and assumptions
 
 - Networking is owned by Electron's main process or the standalone server. The renderer has `contextIsolation: true`, `nodeIntegration: false`, and a sandboxed preload bridge.
@@ -31,6 +37,7 @@ Ports are configurable with `HTTP_LAB_ORIGIN_PORT`, `HTTP_LAB_PROXY_PORT`, and `
 - The Electron app enables proxy Basic auth by default with `proxy` / `proxy` so the 407 scenario is immediately demonstrable; standalone mode remains unauthenticated unless `PROXY_AUTH_USER` and `PROXY_AUTH_PASSWORD` are set.
 - URLs used by the proxy are HTTP absolute-form requests. CONNECT is restricted to the local web server and echo service; arbitrary destinations are rejected.
 - `300 Multiple Choices` is displayed for manual inspection. 301/302/303 follow when redirects are enabled, with a five-hop default limit and automatic `Referer`.
+- The conditional-cache scenarios send `Cache-Control: no-cache` so the second click performs a validator request even while the origin's `max-age` is still fresh; the exchange keeps the actual wire `304` and exposes the reused representation separately.
 - Local caching is in-memory and shared by requests made by the client instance. A fresh hit emits no socket events. Stale entries trigger validators and a 304 reuses the stored decoded body.
 - Session state, item CRUD, cache state, and generated resources are in-memory so every run starts clean and works offline.
 - Generated images are small deterministic assets so page/image connection behavior can be tested without external files.
@@ -49,6 +56,7 @@ With `npm run server` in one terminal:
 ```bash
 curl -v http://127.0.0.1:8080/
 curl -v -X POST -H 'Content-Type: application/x-www-form-urlencoded' --data 'name=cli' http://127.0.0.1:8080/items
+curl -v -X POST -H 'Content-Type: image/jpeg' -H 'X-File-Name: soleil.jpg' --data-binary @/path/to/soleil.jpg http://127.0.0.1:8080/upload
 curl -v -I http://127.0.0.1:8080/
 curl -v -X TRACE http://127.0.0.1:8080/
 ```

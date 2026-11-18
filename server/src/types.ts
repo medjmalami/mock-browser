@@ -34,6 +34,7 @@ export type ParsedWireResponse = {
   trailers: Header[];
   usedChunked: boolean;
   connectionClose: boolean;
+  interim?: Array<{ version: string; statusCode: number; reason: string; headers: Header[] }>;
 };
 
 export type ResponseSpec = {

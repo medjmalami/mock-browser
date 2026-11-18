@@ -12,6 +12,7 @@ const {
   merge304,
   parseHttpRequest,
   parseCompleteResponse,
+  serializeRequest,
   serializeChunkedResponse,
 } = require('../dist/index.js');
 
@@ -70,6 +71,27 @@ test('parseHttpRequest waits for a complete Content-Length body and reports cons
   assert.equal(request.body.toString(), 'test');
   assert.equal(request.consumed, prefix.length + 2);
   assert.equal(request.raw.toString('latin1'), 'POST /items HTTP/1.1\r\nContent-Length: 4\r\n\r\ntest');
+});
+
+test('request serializer preserves binary Uint8Array bodies and counts bytes, not characters', () => {
+  const body = Uint8Array.from([0xff, 0x00, 0x7f, 0xd9]);
+  const request = serializeRequest('POST', '/upload', 'HTTP/1.1', [{ name: 'Content-Type', value: 'image/jpeg' }], body);
+  assert.equal(request.headers.find((header) => header.name === 'Content-Length').value, '4');
+  assert.deepEqual([...request.body], [0xff, 0x00, 0x7f, 0xd9]);
+  assert.deepEqual([...request.bytes.slice(-4)], [0xff, 0x00, 0x7f, 0xd9]);
+});
+
+test('request serializer frames a Transfer-Encoding chunked body instead of sending an unframed payload', () => {
+  const request = serializeRequest('POST', '/items', 'HTTP/1.1', [{ name: 'Transfer-Encoding', value: 'chunked' }], 'hello');
+  assert.equal(request.raw, [
+    'POST /items HTTP/1.1\r\n',
+    'Transfer-Encoding: chunked\r\n',
+    '\r\n',
+    '5\r\nhello\r\n0\r\n\r\n',
+  ].join(''));
+  const parsed = parseHttpRequest(request.bytes);
+  assert.equal(parsed.body.toString(), 'hello');
+  assert.equal(parsed.chunks[0].sizeDecimal, 5);
 });
 
 test('ResponseParser decodes chunk extensions, the terminal zero chunk, trailers, and split framing', () => {

@@ -38,6 +38,7 @@ export class CookieJar {
     let hostOnly = true;
     let path = defaultPath(url.pathname);
     let expiresAt: number | undefined;
+    let maxAgeSeen = false;
     let secure = false;
     let httpOnly = false;
     for (const attribute of parts) {
@@ -53,11 +54,12 @@ export class CookieJar {
         hostOnly = false;
       } else if (rawName === 'path' && rawValue.startsWith('/')) {
         path = rawValue;
-      } else if (rawName === 'expires') {
+      } else if (rawName === 'expires' && !maxAgeSeen) {
         const time = Date.parse(rawValue);
         if (!Number.isNaN(time)) expiresAt = time;
       } else if (rawName === 'max-age' && /^-?\d+$/.test(rawValue)) {
         expiresAt = Date.now() + Number(rawValue) * 1000;
+        maxAgeSeen = true;
       } else if (rawName === 'secure') {
         secure = true;
       } else if (rawName === 'httponly') {

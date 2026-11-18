@@ -1,4 +1,4 @@
-import type { Header, HttpVersion, SerializedRequest } from './types.js';
+import type { Header, HttpVersion, RequestBody, SerializedRequest } from './types.js';
 
 const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
@@ -67,24 +67,33 @@ export function serializeRequest(
   target: string,
   version: HttpVersion | string,
   inputHeaders: Header[] | Record<string, string> | undefined,
-  inputBody?: string | Buffer,
+  inputBody?: RequestBody,
 ): SerializedRequest {
   if (!TOKEN.test(method)) throw new ProtocolError(`invalid request method: ${method}`, 'INVALID_METHOD');
   if (!target || /[\r\n \t]/.test(target)) throw new ProtocolError('invalid request target', 'INVALID_TARGET');
   const headers = normalizeHeaders(inputHeaders);
-  const body = inputBody === undefined ? Buffer.alloc(0) : typeof inputBody === 'string' ? Buffer.from(inputBody) : inputBody;
-  if (!hasHeader(headers, 'Content-Length') && !hasHeader(headers, 'Transfer-Encoding')) {
+  const body = inputBody === undefined ? Buffer.alloc(0) : typeof inputBody === 'string' ? Buffer.from(inputBody) : Buffer.from(inputBody);
+  const transferEncoding = getHeader(headers, 'Transfer-Encoding');
+  if (transferEncoding && hasHeader(headers, 'Content-Length')) throw new ProtocolError('Content-Length and Transfer-Encoding cannot both be sent', 'CONFLICTING_LENGTH');
+  if (transferEncoding && (transferEncoding.split(',').map((value) => value.trim().toLowerCase()).length !== 1 || transferEncoding.trim().toLowerCase() !== 'chunked')) throw new ProtocolError('only Transfer-Encoding: chunked is supported for request bodies', 'UNSUPPORTED_TRANSFER_ENCODING');
+  if (!hasHeader(headers, 'Content-Length') && !transferEncoding) {
     setHeader(headers, 'Content-Length', String(body.length));
   }
   const requestLine = `${method} ${target} ${version}`;
   const rawHead = `${requestLine}\r\n${headersToText(headers)}\r\n`;
+  const wireBody = transferEncoding ? serializeChunkedBody(body) : body;
   return {
-    bytes: Buffer.concat([Buffer.from(rawHead, 'latin1'), body]),
-    raw: Buffer.concat([Buffer.from(rawHead, 'latin1'), body]).toString('latin1'),
+    bytes: Buffer.concat([Buffer.from(rawHead, 'latin1'), wireBody]),
+    raw: Buffer.concat([Buffer.from(rawHead, 'latin1'), wireBody]).toString('latin1'),
     requestLine,
     headers,
     body,
   };
+}
+
+function serializeChunkedBody(body: Buffer): Buffer {
+  if (!body.length) return Buffer.from('0\r\n\r\n', 'latin1');
+  return Buffer.concat([Buffer.from(`${body.length.toString(16)}\r\n`, 'latin1'), body, Buffer.from('\r\n0\r\n\r\n', 'latin1')]);
 }
 
 export function serializeResponse(

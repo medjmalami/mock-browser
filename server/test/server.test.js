@@ -34,6 +34,16 @@ test('chunked parser records extensions and computes the course payload length',
   assert.deepEqual(response.chunks.map((chunk) => [chunk.sizeHex, chunk.sizeDecimal, chunk.extension]), [['6', 6, 'bonjour'], ['10', 16, undefined], ['0', 0, undefined]]);
 });
 
+test('response parser skips informational headers and keeps the final response ordered', () => {
+  const wire = Buffer.from('HTTP/1.1 100 Continue\r\nX-Interim: yes\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok', 'latin1');
+  const response = parseCompleteResponse(wire, 'GET', false);
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body.toString(), 'ok');
+  assert.equal(response.interim.length, 1);
+  assert.equal(response.interim[0].statusCode, 100);
+  assert.equal(response.raw.toString('latin1'), wire.toString('latin1'));
+});
+
 test('serializer emits controlled CRLF and content length', () => {
   const wire = serializeResponse('HTTP/1.1', { statusCode: 201, reason: 'Created', headers: [{ name: 'X-Test', value: 'yes' }], body: 'abc' });
   assert.equal(wire.toString('latin1'), 'HTTP/1.1 201 Created\r\nX-Test: yes\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 3\r\n\r\nabc');
@@ -51,6 +61,26 @@ test('origin implements HEAD with GET-equivalent Content-Length and no body', as
   const headLength = headResponse.headers.find((item) => item.name.toLowerCase() === 'content-length');
   assert.equal(headLength.value, getLength.value);
   assert.equal(headResponse.body.length, 0);
+});
+
+test('origin emits a bodyless, correctly framed 304 and a consistent 206 range', async () => {
+  const app = new OriginApplication();
+  const initial = await app.route(parsedRequest('GET /static/course.txt HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+  const etag = initial.headers.find((item) => item.name === 'ETag');
+  const notModified = await app.route(parsedRequest(`GET /static/course.txt HTTP/1.1\r\nHost: localhost\r\nIf-None-Match: ${etag.value}\r\n\r\n`));
+  const notModifiedWire = app.standardize('HTTP/1.1', notModified, false, false);
+  const parsed304 = parseCompleteResponse(notModifiedWire, 'GET', false);
+  assert.equal(parsed304.statusCode, 304);
+  assert.equal(parsed304.body.length, 0);
+  assert.equal(parsed304.headers.some((item) => item.name.toLowerCase() === 'content-length'), false);
+
+  const partial = await app.route(parsedRequest('GET /status/206 HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+  const partialWire = app.standardize('HTTP/1.1', partial, false, false);
+  const parsed206 = parseCompleteResponse(partialWire, 'GET', false);
+  assert.equal(parsed206.statusCode, 206);
+  assert.equal(parsed206.body.length, 5);
+  assert.equal(parsed206.headers.find((item) => item.name === 'Content-Range').value, 'bytes 0-4/10');
+  assert.equal(parsed206.headers.find((item) => item.name === 'Content-Length').value, '5');
 });
 
 test('origin routes cover TRACE, status headers, login cookie, and chunked response', async () => {
@@ -78,13 +108,33 @@ test('origin routes cover TRACE, status headers, login cookie, and chunked respo
   assert.equal(chunkedResponse.chunks[0].extension, 'bonjour');
 });
 
+test('origin accepts binary uploads and reports the exact received bytes', async () => {
+  const app = new OriginApplication();
+  const image = Buffer.from([0xff, 0xd8, 0x00, 0x7f, 0x00, 0xd9]);
+  const request = parsedRequest(Buffer.concat([
+    Buffer.from('POST /upload HTTP/1.1\r\nHost: localhost\r\nContent-Type: image/jpeg\r\nX-File-Name: soleil.jpg\r\nContent-Length: 6\r\n\r\n', 'latin1'),
+    image,
+  ]));
+  const upload = await app.route(request);
+  assert.equal(upload.statusCode, 201);
+  assert.deepEqual(JSON.parse(upload.body.toString()), {
+    receivedBytes: 6,
+    contentType: 'image/jpeg',
+    fileName: 'soleil.jpg',
+    sha256: '06c8fc3e011e2e90167a8453667d45e8c0e71dc42b82a6e186b28486cc3457ca',
+  });
+});
+
 test('optional raw TCP smoke test (set HTTP_LAB_RUN_NETWORK_TESTS=1)', { skip: process.env.HTTP_LAB_RUN_NETWORK_TESTS !== '1' }, async () => {
-  const services = await startLabServices({ origin: { port: 0 }, proxy: { port: 0 }, echo: { port: 0 } });
+  const services = await startLabServices({ origin: { port: 0 }, proxy: { port: 0, auth: { username: 'proxy', password: 'proxy' } }, echo: { port: 0 } });
   try {
     const response = await rawRequest(services.addresses.origin.port, `GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n`);
     assert.match(response, /^HTTP\/1\.1 200 OK\r\n/);
     const trace = await rawRequest(services.addresses.origin.port, 'TRACE / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n');
     assert.match(trace, /TRACE \/ HTTP\/1\.1/);
+    const proxy = await rawRequest(services.addresses.proxy.port, `GET http://127.0.0.1:${services.addresses.origin.port}/ HTTP/1.1\r\nHost: 127.0.0.1:${services.addresses.origin.port}\r\nProxy-Authorization: Basic cHJveHk6cHJveHk=\r\nConnection: close\r\n\r\n`);
+    assert.match(proxy, /^HTTP\/1\.1 200 OK\r\n/);
+    assert.doesNotMatch(proxy, /,Host:/);
   } finally {
     await services.stop();
   }

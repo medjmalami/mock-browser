@@ -1,18 +1,21 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type JSX, type RefObject } from 'react';
 import { METHOD_REFERENCE, REQUEST_HEADER_REFERENCE, RESPONSE_HEADER_REFERENCE, STATUS_REFERENCE, statusMeaning } from './reference';
 import type { Header, HttpMethod, HttpVersion } from '@http-lab/client-core';
 
 type WireBuffer = { base64: string; length: number };
 type WireChunk = { sizeHex: string; sizeDecimal: number; data: WireBuffer; extension?: string };
 type WireResponse = { version: string; statusCode: number; reason: string; headers: Header[]; body: WireBuffer; raw: WireBuffer; rawHeaders: WireBuffer; chunks: WireChunk[]; trailers: Header[]; complete: boolean; connectionClose: boolean; usedChunked: boolean; compressedBody: WireBuffer; decodedBody: WireBuffer };
-type WireExchange = { id: string; request: { raw: string; requestLine: string; headers: Header[]; body: WireBuffer; bytes: WireBuffer }; response?: WireResponse; attempts: Array<{ request: { raw: string }; response?: WireResponse; error?: string; connectionId?: string }>; timeline: any[]; redirectChain: string[]; fromCache: boolean; cacheRevalidated: boolean; connectionId?: string; connectionReuseCount?: number; error?: string };
+type WireExchange = { id: string; request: { raw: string; requestLine: string; headers: Header[]; body: WireBuffer; bytes: WireBuffer }; response?: WireResponse; cacheResponse?: WireResponse; attempts: Array<{ request: { raw: string }; response?: WireResponse; error?: string; connectionId?: string }>; timeline: any[]; redirectChain: string[]; fromCache: boolean; cacheRevalidated: boolean; connectionId?: string; connectionReuseCount?: number; error?: string };
 type Scenario = { name: string; description: string; options: any };
+type EditableHeader = Header & { enabled: boolean };
+type UploadFile = { file: File; bytes: Uint8Array; name: string; type: string; size: number };
+type BodyMode = 'raw' | 'form' | 'json' | 'binary';
 
 const METHODS = Object.keys(METHOD_REFERENCE) as HttpMethod[];
 const scenarios: Scenario[] = [
   { name: 'Page + images (HTTP/1.1)', description: 'Fetch the HTML page and its two images over a reusable connection.', options: { method: 'GET', url: 'http://127.0.0.1:8080/', version: 'HTTP/1.1', autoRedirect: false, cache: false, cookies: false } },
-  { name: 'Conditional GET → 304', description: 'Enable cache, fetch twice, then inspect the conditional request.', options: { method: 'GET', url: 'http://127.0.0.1:8080/static/course.txt', version: 'HTTP/1.1', cache: true, cookies: false, autoRedirect: false } },
-  { name: 'ETag → 304', description: 'Exercise If-None-Match with the static resource.', options: { method: 'GET', url: 'http://127.0.0.1:8080/static/etag.txt', version: 'HTTP/1.1', cache: true, cookies: false, autoRedirect: false } },
+  { name: 'Conditional GET → 304', description: 'Enable cache, fetch twice, then inspect the conditional request.', options: { method: 'GET', url: 'http://127.0.0.1:8080/static/course.txt', version: 'HTTP/1.1', headers: [{ name: 'Cache-Control', value: 'no-cache' }], cache: true, cookies: false, autoRedirect: false } },
+  { name: 'ETag → 304', description: 'Exercise If-None-Match with the static resource.', options: { method: 'GET', url: 'http://127.0.0.1:8080/static/etag.txt', version: 'HTTP/1.1', headers: [{ name: 'Cache-Control', value: 'no-cache' }], cache: true, cookies: false, autoRedirect: false } },
   { name: 'Basic auth 401 → 200', description: 'Challenge and retry against /protected/.', options: { method: 'GET', url: 'http://127.0.0.1:8080/protected/', version: 'HTTP/1.1', auth: { username: 'mohamed', password: 'hkm4c' }, autoRedirect: false, cache: false, cookies: false } },
   { name: 'Proxy 407 → 200', description: 'Use the local proxy with its optional course credentials.', options: { method: 'GET', url: 'http://127.0.0.1:8080/', version: 'HTTP/1.1', proxy: { host: '127.0.0.1', port: 8888, enabled: true, credentials: { username: 'proxy', password: 'proxy' } }, autoRedirect: false, cache: false, cookies: false } },
   { name: '301 redirect', description: 'Follow /old and show Referer on the next request.', options: { method: 'GET', url: 'http://127.0.0.1:8080/old', version: 'HTTP/1.1', autoRedirect: true, cache: false, cookies: false } },
@@ -71,17 +74,64 @@ function ScenarioMenu({ onSelect }: { onSelect: (scenario: Scenario) => void }):
   </div>;
 }
 
-function HeaderEditor({ headers, setHeaders }: { headers: Header[]; setHeaders: (headers: Header[]) => void }): JSX.Element {
-  const update = (index: number, key: 'name' | 'value', value: string) => setHeaders(headers.map((header, current) => current === index ? { ...header, [key]: value } : header));
+function HeaderEditor({ headers, setHeaders }: { headers: EditableHeader[]; setHeaders: (headers: EditableHeader[] | ((current: EditableHeader[]) => EditableHeader[])) => void }): JSX.Element {
+  const activeCount = headers.filter((header) => header.enabled && header.name.trim()).length;
+  const update = (index: number, patch: Partial<EditableHeader>) => setHeaders(headers.map((header, current) => current === index ? { ...header, ...patch } : header));
   return <div className="headers-editor">
-    <div className="table-head"><span>Name</span><span>Value</span><span /></div>
-    {headers.map((header, index) => <div className="header-row" key={`${index}-${header.name}`}>
-      <input list="course-request-headers" value={header.name} onChange={(event) => update(index, 'name', event.target.value)} aria-label="Header name" />
-      <input value={header.value} onChange={(event) => update(index, 'value', event.target.value)} aria-label="Header value" />
-      <button className="icon-button" onClick={() => setHeaders(headers.filter((_item, current) => current !== index))}>×</button>
+    <div className="header-editor-heading"><span>Headers</span><span className="muted">{activeCount} active · sent in order</span></div>
+    <div className="table-head"><span>On</span><span>Name</span><span>Value</span><span /></div>
+    {headers.map((header, index) => <div className="header-row" key={index}>
+      <input type="checkbox" checked={header.enabled} onChange={(event) => update(index, { enabled: event.target.checked })} aria-label={`Enable ${header.name || 'header'}`} />
+      <input list="course-request-headers" value={header.name} onChange={(event) => update(index, { name: event.target.value })} placeholder="Header-Name" aria-label="Header name" />
+      <input value={header.value} onChange={(event) => update(index, { value: event.target.value })} placeholder="value" aria-label="Header value" />
+      <button type="button" className="icon-button" onClick={() => setHeaders(headers.filter((_item, current) => current !== index))} aria-label={`Remove ${header.name || 'header'}`}>×</button>
     </div>)}
-    <button className="small-button" onClick={() => setHeaders([...headers, { name: 'Accept', value: '*/*' }])}>+ header</button>
+    <button type="button" className="small-button" onClick={() => setHeaders([...headers, { name: '', value: '', enabled: true }])}>+ Add header</button>
     <datalist id="course-request-headers">{Object.keys(REQUEST_HEADER_REFERENCE).map((name) => <option key={name} value={name}>{REQUEST_HEADER_REFERENCE[name]}</option>)}</datalist>
+  </div>;
+}
+
+function toEditableHeaders(input?: Header[] | Record<string, string>): EditableHeader[] {
+  if (!input) return [];
+  const values = Array.isArray(input) ? input : Object.entries(input).map(([name, value]) => ({ name, value }));
+  return values.map((header) => ({ ...header, enabled: true }));
+}
+
+function defaultFileType(name: string, browserType: string): string {
+  if (browserType) return browserType;
+  const extension = name.toLowerCase().split('.').pop();
+  const types: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', avif: 'image/avif', bmp: 'image/bmp' };
+  return types[extension ?? ''] ?? 'application/octet-stream';
+}
+
+function RequestBodyEditor({
+  body,
+  bodyMode,
+  uploadFile,
+  uploadPreviewUrl,
+  fileInputRef,
+  setBody,
+  setBodyMode,
+  chooseUpload,
+  clearUpload,
+}: {
+  body: string;
+  bodyMode: BodyMode;
+  uploadFile?: UploadFile;
+  uploadPreviewUrl?: string;
+  fileInputRef: RefObject<HTMLInputElement | null>;
+  setBody: (value: string) => void;
+  setBodyMode: (value: BodyMode) => void;
+  chooseUpload: (event: ChangeEvent<HTMLInputElement>) => void;
+  clearUpload: () => void;
+}): JSX.Element {
+  return <div className="body-editor-wrap">
+    <div className="body-toolbar"><div><span>Body</span><span className="muted body-hint">{bodyMode === 'binary' ? 'raw bytes' : 'editable text'}</span></div><select value={bodyMode} onChange={(event) => setBodyMode(event.target.value as BodyMode)}><option value="raw">raw</option><option value="form">form-urlencoded</option><option value="json">JSON</option><option value="binary">binary / image</option></select></div>
+    {bodyMode === 'binary' ? <div className="binary-picker">
+      <input ref={fileInputRef} className="file-input" type="file" accept="image/*,.bin,.dat" onChange={(event) => void chooseUpload(event)} />
+      {uploadFile ? <div className="selected-file"><div className="file-meta"><strong>{uploadFile.name}</strong><span>{uploadFile.type} · {uploadFile.size.toLocaleString()} bytes</span></div><button type="button" className="small-button" onClick={clearUpload}>remove</button></div> : <p className="empty">Choose an image or binary file. Its bytes will be sent unchanged.</p>}
+      {uploadFile?.type.startsWith('image/') && uploadPreviewUrl && <img className="upload-preview" src={uploadPreviewUrl} alt={`Preview of ${uploadFile.name}`} />}
+    </div> : <textarea className="body-editor" value={body} onChange={(event) => setBody(event.target.value)} placeholder={bodyMode === 'json' ? '{"title":"…"}' : bodyMode === 'form' ? 'key=value&other=value' : 'Request body bytes…'} />}
   </div>;
 }
 
@@ -89,9 +139,12 @@ export default function App(): JSX.Element {
   const [method, setMethod] = useState<HttpMethod>('GET');
   const [url, setUrl] = useState('http://127.0.0.1:8080/');
   const [version, setVersion] = useState<HttpVersion>('HTTP/1.1');
-  const [headers, setHeaders] = useState<Header[]>([{ name: 'Accept', value: '*/*' }, { name: 'Accept-Encoding', value: 'gzip, identity' }]);
+  const [headers, setHeaders] = useState<EditableHeader[]>([{ name: 'Accept', value: '*/*', enabled: true }, { name: 'Accept-Encoding', value: 'gzip, identity', enabled: true }]);
   const [body, setBody] = useState('');
-  const [bodyMode, setBodyMode] = useState('raw');
+  const [bodyMode, setBodyMode] = useState<BodyMode>('raw');
+  const [uploadFile, setUploadFile] = useState<UploadFile>();
+  const [uploadPreviewUrl, setUploadPreviewUrl] = useState<string>();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [cache, setCache] = useState(false);
   const [cookies, setCookies] = useState(false);
   const [redirects, setRedirects] = useState(false);
@@ -130,14 +183,50 @@ export default function App(): JSX.Element {
     return () => { unsubscribeEvent(); unsubscribeLog(); unsubscribeTunnel(); };
   }, [tunnel?.id]);
 
+  useEffect(() => {
+    if (!uploadFile) {
+      setUploadPreviewUrl(undefined);
+      return;
+    }
+    const previewUrl = URL.createObjectURL(uploadFile.file);
+    setUploadPreviewUrl(previewUrl);
+    return () => URL.revokeObjectURL(previewUrl);
+  }, [uploadFile]);
+
   const refreshState = async () => setState(await window.httpLab.state());
+  const clearUpload = () => {
+    setUploadFile(undefined);
+    setBodyMode('raw');
+    setBody('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+  const chooseUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.currentTarget.files?.[0];
+    if (!file) return;
+    try {
+      const type = defaultFileType(file.name, file.type);
+      setUploadFile({ file, bytes: new Uint8Array(await file.arrayBuffer()), name: file.name, type, size: file.size });
+      setBodyMode('binary');
+      setBody('');
+      setHeaders((items) => {
+        const contentTypeIndex = items.findIndex((item) => item.name.toLowerCase() === 'content-type');
+        if (contentTypeIndex < 0) return [...items, { name: 'Content-Type', value: type, enabled: true }];
+        return items.map((item, index) => index === contentTypeIndex ? { ...item, value: type, enabled: true } : item);
+      });
+      setError('');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
   const selectScenario = (scenario: Scenario) => {
     const options = scenario.options;
     setMethod(options.method);
     setUrl(options.url);
     setVersion(options.version);
-    setHeaders(options.headers ?? []);
+    setHeaders(toEditableHeaders(options.headers));
+    clearUpload();
     setBody(options.body ?? '');
+    setBodyMode(headerValue(options.headers, 'Content-Type')?.includes('json') ? 'json' : headerValue(options.headers, 'Content-Type')?.includes('form') ? 'form' : 'raw');
     setCache(Boolean(options.cache));
     setCookies(Boolean(options.cookies));
     setRedirects(Boolean(options.autoRedirect));
@@ -153,17 +242,23 @@ export default function App(): JSX.Element {
   };
 
   const requestOptions = useMemo(() => {
-    let outgoingBody = body || undefined;
+    const outgoingHeaders: Header[] = headers
+      .filter((header) => header.enabled && header.name.trim())
+      .map(({ enabled: _enabled, ...header }) => header);
+    const hasContentTypeRow = outgoingHeaders.some((header) => header.name.trim().toLowerCase() === 'content-type');
+    const inferredContentType = bodyMode === 'json' ? 'application/json' : bodyMode === 'form' ? 'application/x-www-form-urlencoded' : undefined;
+    if (inferredContentType && !hasContentTypeRow) outgoingHeaders.push({ name: 'Content-Type', value: inferredContentType });
+    let outgoingBody: string | Uint8Array | undefined = bodyMode === 'binary' ? uploadFile?.bytes : body || undefined;
     if (bodyMode === 'json' && body) {
       try { outgoingBody = JSON.stringify(JSON.parse(body)); } catch { outgoingBody = body; }
     }
     return {
     cache, cookies, autoRedirect: redirects, maxRedirects: 5,
-    method, url, version, headers, body: outgoingBody,
+    method, url, version, headers: outgoingHeaders, body: outgoingBody,
     proxy: proxy ? { host: proxyHost, port: Number(proxyPort) || 8888, enabled: true, credentials: proxyUsername && proxyPassword ? { username: proxyUsername, password: proxyPassword } : undefined } : undefined,
     auth: auth ? credentials : undefined,
     };
-  }, [method, url, version, headers, body, bodyMode, cache, cookies, redirects, proxy, proxyHost, proxyPort, proxyUsername, proxyPassword, auth, credentials]);
+  }, [method, url, version, headers, body, bodyMode, uploadFile, cache, cookies, redirects, proxy, proxyHost, proxyPort, proxyUsername, proxyPassword, auth, credentials]);
 
   const send = async () => {
     setBusy(true); setError(''); setTimeline([]);
@@ -186,10 +281,10 @@ export default function App(): JSX.Element {
     try {
       const before = await window.httpLab.state() as any;
       const loadVersion = async (loadVersionValue: HttpVersion) => {
-        const page = await window.httpLab.request({ ...requestOptions, method: 'GET', version: loadVersionValue, url, autoRedirect: true }) as WireExchange;
+        const page = await window.httpLab.request({ ...requestOptions, method: 'GET', version: loadVersionValue, url, body: undefined, autoRedirect: true }) as WireExchange;
         const html = text(page.response?.decodedBody);
         const imageSources = [...html.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)].map((match) => match[1]);
-        await Promise.all(imageSources.map((source) => window.httpLab.request({ ...requestOptions, method: 'GET', version: loadVersionValue, url: new URL(source, url).toString(), autoRedirect: true })));
+        await Promise.all(imageSources.map((source) => window.httpLab.request({ ...requestOptions, method: 'GET', version: loadVersionValue, url: new URL(source, url).toString(), body: undefined, autoRedirect: true })));
         return { page, objects: imageSources.length + 1 };
       };
       const [http10, http11] = await Promise.all([loadVersion('HTTP/1.0'), loadVersion('HTTP/1.1')]);
@@ -214,7 +309,8 @@ export default function App(): JSX.Element {
     const replayUrl = replayTarget.startsWith('http://') || replayTarget.startsWith('https://') ? replayTarget : `http://${replayHost}${replayTarget}`;
     setBusy(true);
     try {
-      const result = await window.httpLab.request({ method: replayMethod as HttpMethod, url: replayUrl, version: replayVersion as HttpVersion, headers: item.request.headers, body: text(item.request.body) || undefined, autoRedirect: false, cache: false, cookies: false }) as WireExchange;
+      const replayBody = decode(item.request.body);
+      const result = await window.httpLab.request({ method: replayMethod as HttpMethod, url: replayUrl, version: replayVersion as HttpVersion, headers: item.request.headers, body: replayBody.length ? replayBody : undefined, autoRedirect: false, cache: false, cookies: false }) as WireExchange;
       setExchange(result);
       setTimeline(result.timeline ?? []);
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
@@ -237,7 +333,7 @@ export default function App(): JSX.Element {
     <div className="method-note"><span className="method-pill">{method}</span><span>{METHOD_REFERENCE[method]?.description}</span></div>
     <section className="workspace">
       <aside className="left-column">
-        <section className="panel request-panel"><div className="panel-title"><span>Request</span><span className="muted">editable wire intent</span></div><HeaderEditor headers={headers} setHeaders={setHeaders} /><div className="body-toolbar"><span>Body</span><select value={bodyMode} onChange={(event) => setBodyMode(event.target.value)}><option value="raw">raw</option><option value="form">form-urlencoded</option><option value="json">JSON</option></select></div><textarea className="body-editor" value={body} onChange={(event) => setBody(event.target.value)} placeholder="Request body bytes…" /><div className="toggles">{[['cache', cache, setCache, 'cache'], ['cookies', cookies, setCookies, 'cookies'], ['redirects', redirects, setRedirects, 'redirects'], ['proxy', proxy, setProxy, 'proxy'], ['auth', auth, setAuth, 'auth helper']].map(([key, value, setter, label]) => <label key={key as string}><input type="checkbox" checked={value as boolean} onChange={(event) => (setter as (value: boolean) => void)(event.target.checked)} /> {label as string}</label>)}</div>{proxy && <div className="proxy-settings"><span className="muted">proxy endpoint</span><input value={proxyHost} onChange={(event) => setProxyHost(event.target.value)} placeholder="host" /><input value={proxyPort} onChange={(event) => setProxyPort(event.target.value)} placeholder="port" /><input value={proxyUsername} onChange={(event) => setProxyUsername(event.target.value)} placeholder="proxy user (optional)" /><input type="password" value={proxyPassword} onChange={(event) => setProxyPassword(event.target.value)} placeholder="proxy password (optional)" /></div>}{auth && <div className="credential-row"><input value={credentials.username} onChange={(event) => setCredentials({ ...credentials, username: event.target.value })} placeholder="username" /><input type="password" value={credentials.password} onChange={(event) => setCredentials({ ...credentials, password: event.target.value })} placeholder="password" /><code>Authorization: Basic {btoa(`${credentials.username}:${credentials.password}`)} · Base64 is not encryption</code></div>}</section>
+        <section className="panel request-panel"><div className="panel-title"><span>Request</span><span className="muted">editable wire intent</span></div><HeaderEditor headers={headers} setHeaders={setHeaders} /><RequestBodyEditor body={body} bodyMode={bodyMode} uploadFile={uploadFile} uploadPreviewUrl={uploadPreviewUrl} fileInputRef={fileInputRef} setBody={setBody} setBodyMode={setBodyMode} chooseUpload={chooseUpload} clearUpload={clearUpload} /><div className="toggles">{[['cache', cache, setCache, 'cache'], ['cookies', cookies, setCookies, 'cookies'], ['redirects', redirects, setRedirects, 'redirects'], ['proxy', proxy, setProxy, 'proxy'], ['auth', auth, setAuth, 'auth helper']].map(([key, value, setter, label]) => <label key={key as string}><input type="checkbox" checked={value as boolean} onChange={(event) => (setter as (value: boolean) => void)(event.target.checked)} /> {label as string}</label>)}</div>{proxy && <div className="proxy-settings"><span className="muted">proxy endpoint</span><input value={proxyHost} onChange={(event) => setProxyHost(event.target.value)} placeholder="host" /><input value={proxyPort} onChange={(event) => setProxyPort(event.target.value)} placeholder="port" /><input value={proxyUsername} onChange={(event) => setProxyUsername(event.target.value)} placeholder="proxy user (optional)" /><input type="password" value={proxyPassword} onChange={(event) => setProxyPassword(event.target.value)} placeholder="proxy password (optional)" /></div>}{auth && <div className="credential-row"><input value={credentials.username} onChange={(event) => setCredentials({ ...credentials, username: event.target.value })} placeholder="username" /><input type="password" value={credentials.password} onChange={(event) => setCredentials({ ...credentials, password: event.target.value })} placeholder="password" /><code>Authorization: Basic {btoa(`${credentials.username}:${credentials.password}`)} · Base64 is not encryption</code></div>}</section>
         <section className="panel side-panel"><div className="panel-title">Connections</div>{state.connections?.length ? state.connections.map((connection: any) => <div className="connection-card" key={connection.id}><span className={connection.open ? 'status-dot' : 'status-dot closed'} /> <code>{connection.id}</code><span>{connection.host}:{connection.port}</span><small>{connection.requestCount} requests · {connection.reuseCount} reuse</small></div>) : <p className="empty">No sockets yet. Send a request to watch them appear.</p>}</section>
         <section className="panel side-panel"><div className="panel-title">Cookie jar <span className="muted">{state.cookies?.length ?? 0}</span></div>{state.cookies?.map((cookie: any) => <div className="cookie-card" key={`${cookie.domain}-${cookie.path}-${cookie.name}`}><code>{cookie.name}={cookie.value}</code><small>{cookie.domain}{cookie.path}</small><button className="icon-button" onClick={() => void window.httpLab.deleteCookie(cookie.name, cookie.domain, cookie.path).then(refreshState)}>×</button></div>)}</section>
       </aside>
@@ -272,10 +368,27 @@ function RequestView({ exchange }: { exchange?: WireExchange }): JSX.Element {
 
 function ResponseView({ exchange, contentType, bodyText }: { exchange?: WireExchange; contentType: string; bodyText: string }): JSX.Element {
   const response = exchange?.response;
+  const cachedResponse = exchange?.cacheResponse;
+  const representation = response?.statusCode === 304 ? cachedResponse ?? response : response;
   const [bodyTab, setBodyTab] = useState('rendered');
   const status = response ? statusMeaning(response.statusCode) : undefined;
   const image = contentType.startsWith('image/');
-  return <div className="view-stack"><section className="panel">{response ? <><div className="status-line"><span>{response.version}</span><strong>{response.statusCode}</strong><span>{response.reason}</span><em className={`status-badge status-${classNameFor(response.statusCode)}`}>{classNameFor(response.statusCode)}</em></div><p className="status-explanation">{status?.meaning}</p><div className="section-label">Response headers</div><div className="headers-table">{response.headers.map((header, index) => <div className="response-header" key={`${index}-${header.name}`} title={RESPONSE_HEADER_REFERENCE[header.name] ?? REQUEST_HEADER_REFERENCE[header.name] ?? 'HTTP header'}><code>{header.name}</code><span>{header.value}</span></div>)}</div></> : <p className="empty">No response yet.</p>}</section>{response && <section className="panel body-panel"><div className="body-tabs">{['rendered', 'raw', 'hex', 'chunks'].map((tab) => <button className={bodyTab === tab ? 'active' : ''} key={tab} onClick={() => setBodyTab(tab)}>{tab}</button>)}</div>{bodyTab === 'rendered' && (image ? <img className="image-preview" src={`data:${contentType};base64,${response.decodedBody.base64}`} /> : contentType.includes('text/html') ? <iframe className="render-frame" sandbox="" srcDoc={bodyText} title="Sandboxed response preview" /> : <pre className="body-output">{contentType.includes('json') ? jsonBody(response) : bodyText}</pre>)}{bodyTab === 'raw' && <pre className="body-output">{visible(text(response.body))}</pre>}{bodyTab === 'hex' && <pre className="body-output">{hexDump(decode(response.body))}</pre>}{bodyTab === 'chunks' && <div className="chunk-view"><div className="chunk-summary">{response.chunks.length} chunks · decoded total <strong>{response.chunks.reduce((sum, chunk) => sum + chunk.sizeDecimal, 0)} bytes</strong> · course example expects 10h + 6h = 22</div>{response.chunks.map((chunk, index) => <div className="chunk-row" key={index}><code>{chunk.sizeHex}</code><span>{chunk.sizeDecimal}</span><pre>{text(chunk.data)}</pre><small>{chunk.extension ?? ''}</small></div>)}{response.trailers.length > 0 && <div className="trailers">Trailers: {response.trailers.map((header) => `${header.name}: ${header.value}`).join(' · ')}</div>}</div>}</section>}{response && <section className="panel"><div className="panel-title">Raw response wire</div><pre className="wire">{visible(text(response.raw))}</pre><div className="compression-note">compressed {response.compressedBody.length} B · decoded {response.decodedBody.length} B</div></section>}</div>;
+  return <div className="view-stack">
+    <section className="panel">{response ? <>
+      <div className="status-line"><span>{response.version}</span><strong>{response.statusCode}</strong><span>{response.reason}</span><em className={`status-badge status-${classNameFor(response.statusCode)}`}>{classNameFor(response.statusCode)}</em></div>
+      <p className="status-explanation">{status?.meaning}</p>
+      {cachedResponse && <p className="status-explanation">304 received on the wire; the cached representation is shown below.</p>}
+      <div className="section-label">Response headers</div>
+      <div className="headers-table">{response.headers.map((header, index) => <div className="response-header" key={`${index}-${header.name}`} title={RESPONSE_HEADER_REFERENCE[header.name] ?? REQUEST_HEADER_REFERENCE[header.name] ?? 'HTTP header'}><code>{header.name}</code><span>{header.value}</span></div>)}</div>
+    </> : <p className="empty">No response yet.</p>}</section>
+    {response && <section className="panel body-panel"><div className="body-tabs">{['rendered', 'raw', 'hex', 'chunks'].map((tab) => <button className={bodyTab === tab ? 'active' : ''} key={tab} onClick={() => setBodyTab(tab)}>{tab}</button>)}</div>
+      {bodyTab === 'rendered' && (image ? <img className="image-preview" src={`data:${contentType};base64,${representation?.decodedBody.base64}`} /> : contentType.includes('text/html') ? <iframe className="render-frame" sandbox="" srcDoc={cachedResponse ? text(representation?.decodedBody) : bodyText} title="Sandboxed response preview" /> : <pre className="body-output">{contentType.includes('json') ? jsonBody(representation) : cachedResponse ? text(representation?.decodedBody) : bodyText}</pre>)}
+      {bodyTab === 'raw' && <pre className="body-output">{visible(text(response.body))}</pre>}
+      {bodyTab === 'hex' && <pre className="body-output">{hexDump(decode(response.body))}</pre>}
+      {bodyTab === 'chunks' && <div className="chunk-view"><div className="chunk-summary">{response.chunks.length} chunks · decoded total <strong>{response.chunks.reduce((sum, chunk) => sum + chunk.sizeDecimal, 0)} bytes</strong> · course example expects 10h + 6h = 22</div>{response.chunks.map((chunk, index) => <div className="chunk-row" key={index}><code>{chunk.sizeHex}</code><span>{chunk.sizeDecimal}</span><pre>{text(chunk.data)}</pre><small>{chunk.extension ?? ''}</small></div>)}{response.trailers.length > 0 && <div className="trailers">Trailers: {response.trailers.map((header) => `${header.name}: ${header.value}`).join(' · ')}</div>}</div>}
+    </section>}
+    {response && <section className="panel"><div className="panel-title">Raw response wire</div><pre className="wire">{visible(text(response.raw))}</pre><div className="compression-note">compressed {response.compressedBody.length} B · decoded {response.decodedBody.length} B</div></section>}
+  </div>;
 }
 
 function TimelineView({ events }: { events: any[] }): JSX.Element {

@@ -9,6 +9,7 @@ import { ResponseParser } from './parser.js';
 import { getHeader, hasHeader, normalizeHeaders, removeHeader, setHeader, serializeRequest } from './serializer.js';
 import type {
   AuthCredentials,
+  CacheEntry,
   ConnectionInfo,
   Exchange,
   ExchangeAttempt,
@@ -236,20 +237,22 @@ export class HttpClient {
     let currentBody = options.body;
     let fromCache = false;
     let cacheRevalidated = false;
+    let cacheResponse: ParsedResponse | undefined;
     let lastRequest: SerializedRequest | undefined;
     let lastResponse: ParsedResponse | undefined;
     let lastConnectionId: string | undefined;
     let lastReuseCount: number | undefined;
-    let staleEntry = options.cache === true && currentMethod === 'GET' ? this.cache.lookup(currentUrl) : undefined;
+    const cachePolicy = requestCachePolicy(options.headers);
+    let staleEntry = options.cache === true && currentMethod === 'GET' && !cachePolicy.noStore ? this.cache.lookup(currentUrl) : undefined;
 
-    if (staleEntry?.state === 'fresh' && staleEntry.entry) {
+    if (staleEntry?.state === 'fresh' && staleEntry.entry && !cachePolicy.revalidate) {
       fromCache = true;
       emit('cache-hit', `Fresh cache entry served without network access for ${currentUrl}`, { remainingMs: staleEntry.remainingMs });
       lastRequest = this.buildRequest({ ...options, url: currentUrl, method: currentMethod, version, body: currentBody }, [] ).request;
       lastResponse = responseFromCache(staleEntry.entry);
       return { id: exchangeId, request: lastRequest, response: lastResponse, attempts, timeline, redirectChain, fromCache, cacheRevalidated, connectionId: lastConnectionId, connectionReuseCount: lastReuseCount };
     }
-    if (staleEntry?.state === 'stale' && staleEntry.entry) emit('cache-conditional', `Stale cache entry; conditional request will validate ${currentUrl}`, { etag: staleEntry.entry.etag, lastModified: staleEntry.entry.lastModified });
+    if (staleEntry?.entry && (staleEntry.state === 'stale' || cachePolicy.revalidate)) emit('cache-conditional', `${staleEntry.state === 'fresh' ? 'Cache revalidation requested' : 'Stale cache entry'}; conditional request will validate ${currentUrl}`, { etag: staleEntry.entry.etag, lastModified: staleEntry.entry.lastModified });
 
     const maxRedirects = options.maxRedirects ?? 5;
     let redirectHops = 0;
@@ -259,7 +262,7 @@ export class HttpClient {
     while (true) {
       let extraHeaders: Header[] = [];
       if (referer) extraHeaders.push({ name: 'Referer', value: referer });
-      if (staleEntry?.state === 'stale' && staleEntry.entry && currentMethod === 'GET') extraHeaders = extraHeaders.concat(conditionalHeaders(staleEntry.entry));
+      if (staleEntry?.entry && (staleEntry.state === 'stale' || cachePolicy.revalidate) && currentMethod === 'GET') extraHeaders = extraHeaders.concat(conditionalHeaders(staleEntry.entry));
       let response: ParsedResponse | undefined;
       let currentAttempt: ExchangeAttempt | undefined;
       for (let challenge = 0; challenge < 2; challenge += 1) {
@@ -299,18 +302,20 @@ export class HttpClient {
       lastResponse = response;
       if (response.statusCode === 304 && staleEntry?.entry) {
         const refreshed = this.cache.revalidate(currentUrl, currentMethod, response);
-        lastResponse = merge304(refreshed ?? staleEntry.entry, response);
+        cacheResponse = merge304(refreshed ?? staleEntry.entry, response);
         cacheRevalidated = true;
         staleEntry = refreshed ? this.cache.lookup(currentUrl, currentMethod) : staleEntry;
         emit('cache-304', `304 Not Modified; reused cached body for ${currentUrl}`, undefined, lastConnectionId);
-      } else if (options.cache && currentMethod === 'GET' && response.statusCode === 200) {
-        const stored = this.cache.store(currentUrl, currentMethod, response);
+      } else if (options.cache && !cachePolicy.noStore && currentMethod === 'GET' && response.statusCode === 200) {
+        const stored = this.cache.store(currentUrl, currentMethod, response, Date.now(), lastRequest?.headers);
         if (stored) emit('cache-store', `Stored ${currentUrl} in the local cache`, { expiresAt: stored.expiresAt }, lastConnectionId);
       }
+      if (!['GET', 'HEAD'].includes(currentMethod)) this.cache.remove(currentUrl, 'GET');
       const location = getHeader(response.headers, 'Location');
       const canRedirect = options.autoRedirect && [301, 302, 303].includes(response.statusCode) && location;
       if (canRedirect && redirectHops < maxRedirects) {
         const nextUrl = new URL(location!, currentUrl).toString();
+        if (new URL(nextUrl).origin !== new URL(currentUrl).origin) authHeader = undefined;
         emit('redirect-followed', `${response.statusCode} followed to ${nextUrl}`, { from: currentUrl, to: nextUrl }, lastConnectionId);
         referer = currentUrl;
         currentUrl = nextUrl;
@@ -320,20 +325,32 @@ export class HttpClient {
           currentMethod = 'GET';
           currentBody = undefined;
         }
-        staleEntry = options.cache && currentMethod === 'GET' ? this.cache.lookup(currentUrl) : undefined;
+        staleEntry = options.cache && currentMethod === 'GET' && !cachePolicy.noStore ? this.cache.lookup(currentUrl) : undefined;
         continue;
       }
       if (canRedirect && redirectHops >= maxRedirects) emit('error', `Redirect limit of ${maxRedirects} reached`, { chain: redirectChain }, lastConnectionId);
       break;
     }
-    return { id: exchangeId, request: lastRequest!, response: lastResponse, attempts, timeline, redirectChain, fromCache, cacheRevalidated, connectionId: lastConnectionId, connectionReuseCount: lastReuseCount };
+    return { id: exchangeId, request: lastRequest!, response: lastResponse, cacheResponse, attempts, timeline, redirectChain, fromCache, cacheRevalidated, connectionId: lastConnectionId, connectionReuseCount: lastReuseCount };
   }
 
   async pipeline(requests: RequestOptions[]): Promise<Exchange[]> {
     if (!requests.length) return [];
     const first = requests[0];
     const version = first.version ?? 'HTTP/1.1';
+    if (version !== 'HTTP/1.1') throw new Error('HTTP pipelining requires HTTP/1.1 persistent connections');
+    const firstUrl = new URL(first.url);
+    const firstProxy = first.proxy?.enabled === false ? undefined : first.proxy;
+    const endpointKey = (url: URL, proxy?: ProxyOptions) => `${url.protocol}//${url.hostname}:${url.port || (url.protocol === 'https:' ? 443 : 80)}|${proxy ? `${proxy.host}:${proxy.port}` : 'direct'}`;
+    const firstEndpoint = endpointKey(firstUrl, firstProxy);
+    for (const options of requests) {
+      if ((options.version ?? version) !== version) throw new Error('All pipelined requests must use the same HTTP version');
+      const url = new URL(options.url);
+      const proxy = options.proxy?.enabled === false ? undefined : options.proxy;
+      if (endpointKey(url, proxy) !== firstEndpoint) throw new Error('All pipelined requests must target the same origin and proxy endpoint');
+    }
     const built = requests.map((options) => this.buildRequest({ ...options, version }, []));
+    if (built.some((item) => getHeader(item.request.headers, 'Connection')?.toLowerCase().split(',').map((value) => value.trim()).includes('close'))) throw new Error('Pipelined requests must keep the connection alive');
     const target = built[0].target;
     const proxy = first.proxy?.enabled === false ? undefined : first.proxy;
     const connection = await this.connectionFor(target, version, proxy, built[0].secure, built[0].host, built[0].port);
@@ -350,11 +367,12 @@ export class HttpClient {
     const version = options.version ?? 'HTTP/1.1';
     let proxyAuthorization: string | undefined;
     let built = this.buildRequest({ ...options, method: 'CONNECT', version }, [], undefined, proxyAuthorization);
-    let connection = await this.connectionFor(built.target, version, built.proxy, built.secure, built.host, built.port);
+    let connection = await this.connectionFor(built.target, version, built.proxy, built.secure, built.host, built.port, undefined, false);
     let response = await connection.send(built.request, 'CONNECT');
     if (response.statusCode === 407 && options.proxy.credentials) {
       proxyAuthorization = basicAuthorization(options.proxy.credentials.username, options.proxy.credentials.password);
       built = this.buildRequest({ ...options, method: 'CONNECT', version }, [], undefined, proxyAuthorization);
+      if (!connection.isOpen) connection = await this.connectionFor(built.target, version, built.proxy, built.secure, built.host, built.port, undefined, false);
       response = await connection.send(built.request, 'CONNECT');
     }
     if (response.statusCode < 200 || response.statusCode >= 300) throw new Error(`CONNECT failed: ${response.statusCode} ${response.reason}`);
@@ -430,7 +448,7 @@ export class HttpClient {
     const host = direct ? (originHost ?? url?.hostname ?? this.hostFromTarget(target)) : proxy.host;
     const port = direct ? (originPort ?? (url ? Number(url.port || (url.protocol === 'https:' ? 443 : 80)) : this.portFromTarget(target))) : proxy.port;
     const secure = secureOverride ?? Boolean(url?.protocol === 'https:' && (!proxy || proxy.enabled === false));
-    const key = `${secure ? 'tls' : 'tcp'}://${host}:${port}/${version}/${proxy ? 'proxy' : 'direct'}`;
+    const key = `${secure ? 'tls' : 'tcp'}://${host}:${port}/${version}/${direct ? 'direct' : 'proxy'}`;
     let connection = reusable ? this.connections.get(key) : undefined;
     if (!connection || !connection.isActive) {
       connection = new RawConnection(host, port, version, secure, this.eventSink);
@@ -480,8 +498,21 @@ function resultConnection(response: ParsedResponse): string | undefined {
   return response.headers.find((header) => header.name.toLowerCase() === 'connection')?.value;
 }
 
-function responseFromCache(entry: { version?: string; statusCode: number; reason: string; headers: Header[]; body: Buffer }): ParsedResponse {
-  return { version: entry.version ?? 'HTTP/1.1', statusCode: entry.statusCode, reason: entry.reason, headers: entry.headers.map((header) => ({ ...header })), body: Buffer.from(entry.body), raw: Buffer.alloc(0), rawHeaders: Buffer.alloc(0), chunks: [], trailers: [], complete: true, connectionClose: false, usedChunked: false, compressedBody: Buffer.from(entry.body), decodedBody: Buffer.from(entry.body) };
+function responseFromCache(entry: CacheEntry): ParsedResponse {
+  const decodedBody = Buffer.from(entry.body);
+  const compressedBody = Buffer.from(entry.compressedBody ?? entry.body);
+  return { version: entry.version ?? 'HTTP/1.1', statusCode: entry.statusCode, reason: entry.reason, headers: entry.headers.map((header) => ({ ...header })), body: compressedBody, raw: Buffer.alloc(0), rawHeaders: Buffer.alloc(0), chunks: [], trailers: [], complete: true, connectionClose: false, usedChunked: false, compressedBody, decodedBody };
+}
+
+function requestCachePolicy(input?: Header[] | Record<string, string>): { revalidate: boolean; noStore: boolean } {
+  const headers = normalizeHeaders(input);
+  const cacheControl = getHeader(headers, 'Cache-Control') ?? '';
+  const directives = cacheControl.split(',').map((value) => value.trim().toLowerCase());
+  const pragma = (getHeader(headers, 'Pragma') ?? '').toLowerCase().split(',').map((value) => value.trim());
+  return {
+    revalidate: directives.some((value) => /^no-cache(?:\s*=|\s*;|$)/.test(value) || /^max-age\s*=\s*0(?:\s*;|$)/.test(value)) || pragma.includes('no-cache'),
+    noStore: directives.some((value) => /^no-store(?:\s*;|$)/.test(value)),
+  };
 }
 
 export function visibleWire(value: Buffer | string): string {

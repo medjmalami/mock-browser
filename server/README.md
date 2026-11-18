@@ -32,7 +32,8 @@ bytes, cache decisions, proxy authentication, and tunnel bytes.
 The origin implements the HTTP Lab routes from the project brief, including
 static resources, conditional requests, ranges, `/items` CRUD, login sessions,
 Basic auth, redirects, negotiation, gzip, chunked/streaming responses,
-`/status/:code`, latency/timeout demonstrations, and TRACE. Login uses
+`/status/:code`, latency/timeout demonstrations, TRACE, and a binary `/upload`
+route that reports the received byte count and SHA-256 digest. Login uses
 `mohamed` / `hkm4c`; the same credentials protect `/protected/`.
 
 The proxy accepts absolute-form HTTP requests and only forwards to the local

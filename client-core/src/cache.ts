@@ -39,17 +39,21 @@ export class HttpCache {
     return { state: 'stale', entry, remainingMs: entry.expiresAt === undefined ? undefined : entry.expiresAt - now };
   }
 
-  store(url: string, method: string, response: ParsedResponse, now = Date.now()): CacheEntry | undefined {
+  store(url: string, method: string, response: ParsedResponse, now = Date.now(), requestHeaders: Header[] = []): CacheEntry | undefined {
     if (method.toUpperCase() !== 'GET' || response.statusCode !== 200) return undefined;
     const cacheControl = getHeader(response.headers, 'Cache-Control') ?? '';
     if (/\bno-store\b/i.test(cacheControl) || /\bprivate\b/i.test(cacheControl)) return undefined;
+    if (getHeader(requestHeaders, 'Authorization') || getHeader(requestHeaders, 'Cookie')) return undefined;
+    if (getHeader(response.headers, 'Set-Cookie') || getHeader(response.headers, 'Vary')?.trim() === '*') return undefined;
     const entry: CacheEntry = {
       key: this.key(url, method),
       url,
+      version: response.version,
       statusCode: response.statusCode,
       reason: response.reason,
       headers: response.headers.map((header) => ({ ...header })),
       body: Buffer.from(response.decodedBody),
+      compressedBody: Buffer.from(response.compressedBody),
       storedAt: now,
       expiresAt: expiryFromHeaders(response.headers, now),
       lastModified: getHeader(response.headers, 'Last-Modified'),
@@ -93,6 +97,7 @@ export class HttpCache {
       ...entry,
       headers: entry.headers.map((header) => ({ ...header })),
       body: Buffer.from(entry.body),
+      compressedBody: entry.compressedBody ? Buffer.from(entry.compressedBody) : undefined,
       remainingMs: entry.expiresAt === undefined ? undefined : entry.expiresAt - now,
       fresh: entry.expiresAt !== undefined && entry.expiresAt > now,
     }));
@@ -112,7 +117,7 @@ export function merge304(entry: CacheEntry, response: ParsedResponse): ParsedRes
     headers,
     body: Buffer.from(entry.body),
     decodedBody: Buffer.from(entry.body),
-    compressedBody: Buffer.from(entry.body),
+    compressedBody: Buffer.from(entry.compressedBody ?? entry.body),
   };
 }
 

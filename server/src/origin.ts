@@ -114,6 +114,12 @@ function methodNotAllowed(allow: string): OriginResult {
   return { statusCode: 405, headers: [header('Allow', allow)], body: bytes('405 Method Not Allowed\n') };
 }
 
+function removeContentLength(headers: Header[]): void {
+  for (let index = headers.length - 1; index >= 0; index -= 1) {
+    if (headers[index].name.toLowerCase() === 'content-length') headers.splice(index, 1);
+  }
+}
+
 function notFound(): OriginResult {
   return { statusCode: 404, body: bytes('404 Not Found\n') };
 }
@@ -121,11 +127,11 @@ function notFound(): OriginResult {
 function representation(request: ParsedRequest, body: Buffer, type: string, modified: Date, etag: string, maxAge = 60): OriginResult {
   const headers = makeResourceHeaders(body, type, modified, etag, maxAge);
   const ifMatch = getHeader(request.headers, 'If-Match');
-  if (ifMatch && ifMatch !== '*' && !ifMatch.split(',').map((item) => item.trim()).includes(etag)) {
+  if (ifMatch && !entityTagMatches(ifMatch, etag, false)) {
     return { statusCode: 412, headers: [header('ETag', etag)], body: bytes('412 Precondition Failed\n') };
   }
   const noneMatch = getHeader(request.headers, 'If-None-Match');
-  const matchesTag = noneMatch === '*' || Boolean(noneMatch?.split(',').map((item) => item.trim()).includes(etag));
+  const matchesTag = entityTagMatches(noneMatch, etag, true);
   const since = getHeader(request.headers, 'If-Modified-Since');
   const matchesDate = since !== undefined && !Number.isNaN(Date.parse(since)) && Math.floor(modified.getTime() / 1000) <= Math.floor(Date.parse(since) / 1000);
   if (matchesTag || (!noneMatch && matchesDate)) {
@@ -146,6 +152,12 @@ function representation(request: ParsedRequest, body: Buffer, type: string, modi
   return { statusCode: 200, headers, body };
 }
 
+function privateRepresentation(request: ParsedRequest, body: Buffer, type: string, modified: Date, etag: string, maxAge = 60): OriginResult {
+  const result = representation(request, body, type, modified, etag, maxAge);
+  setHeader(result.headers ?? (result.headers = []), 'Cache-Control', `private, max-age=${maxAge}`);
+  return result;
+}
+
 function responseText(statusCode: number, text: string, headers: Header[] = []): OriginResult {
   return { statusCode, headers, body: bytes(text) };
 }
@@ -160,19 +172,31 @@ function routeUrl(target: string): URL {
   return new URL(target, 'http://127.0.0.1');
 }
 
+function entityTagMatches(value: string | undefined, current: string, weak: boolean): boolean {
+  if (!value) return false;
+  if (value.trim() === '*') return true;
+  return value.split(',').some((candidate) => {
+    const normalized = candidate.trim();
+    if (!normalized) return false;
+    return weak ? normalized.replace(/^W\//i, '') === current.replace(/^W\//i, '') : normalized === current;
+  });
+}
+
 function statusResult(code: number, request: ParsedRequest): OriginResult {
   if (code >= 100 && code < 200) {
+    if (code === 101) return responseText(200, '101 Switching Protocols is not used by this teaching server\n');
     if (request.version !== 'HTTP/1.1') return responseText(200, `${code} informational responses are only sent for HTTP/1.1 requests\n`);
     return { statusCode: 200, body: bytes(`The server emitted an interim ${code} response for this HTTP/1.1 request.\n`), interim: [{ statusCode: code, reason: STATUS_TEXT[code] ?? reasonPhrase(code) }] };
   }
+  const statusBody = code === 206 ? bytes('part\n') : bytes(`${code} ${STATUS_TEXT[code] ?? reasonPhrase(code)}\n`);
   const headers: Header[] = [];
-  if (code >= 300 && code < 400) headers.push(header('Location', code === 300 ? '/?choice=one' : '/'));
+  if (code >= 300 && code < 400 && code !== 304) headers.push(header('Location', code === 300 ? '/?choice=one' : '/'));
   if (code === 401) headers.push(header('WWW-Authenticate', 'Basic realm="isims"'));
   if (code === 407) headers.push(header('Proxy-Authenticate', 'Basic realm="isims"'));
   if (code === 405) headers.push(header('Allow', 'GET, HEAD, POST, PUT, PATCH, DELETE, TRACE'));
-  if (code === 206) headers.push(header('Content-Range', 'bytes 0-4/5'));
+  if (code === 206) headers.push(header('Content-Range', `bytes 0-${statusBody.length - 1}/10`));
   if (code === 503) headers.push(header('Retry-After', '5'));
-  return { statusCode: code, headers, body: bytes(`${code} ${STATUS_TEXT[code] ?? reasonPhrase(code)}\n`) };
+  return { statusCode: code, headers, body: statusBody };
 }
 
 export class OriginApplication {
@@ -233,7 +257,12 @@ export class OriginApplication {
       this.emit('connection-closed', `Origin connection ${connectionId} closed`, connectionId, { requestCount, remotePort });
     };
     const sendTimeout = () => {
-      if (closed || !buffer.length) {
+      if (closed) return;
+      if (processing) {
+        socket.setTimeout(0);
+        return;
+      }
+      if (!buffer.length) {
         socket.destroy();
         return;
       }
@@ -242,10 +271,15 @@ export class OriginApplication {
       socket.end(response);
       buffer = Buffer.alloc(0);
     };
-    socket.setTimeout(this.keepAliveTimeoutMs, sendTimeout);
+    const armTimeout = () => {
+      socket.setTimeout(this.keepAliveTimeoutMs);
+      socket.removeListener('timeout', sendTimeout);
+      socket.once('timeout', sendTimeout);
+    };
+    armTimeout();
     socket.on('data', (chunk) => {
       if (closed) return;
-      socket.setTimeout(this.keepAliveTimeoutMs, sendTimeout);
+      armTimeout();
       buffer = Buffer.concat([buffer, chunk]);
       void processBuffer();
     });
@@ -282,7 +316,7 @@ export class OriginApplication {
             closed = true;
             break;
           }
-          socket.setTimeout(this.keepAliveTimeoutMs, sendTimeout);
+          armTimeout();
         }
       } finally {
         processing = false;
@@ -310,8 +344,10 @@ export class OriginApplication {
       if (!close) setHeader(headers, 'Keep-Alive', `timeout=${Math.floor(this.keepAliveTimeoutMs / 1000)}, max=${this.maxRequestsPerConnection}`);
       return serializeChunkedResponse(version, { ...result, headers });
     }
-    if (head) setHeader(headers, 'Content-Length', String(body.length));
-    else if (noBodyStatus) setHeader(headers, 'Content-Length', '0');
+    if (head && result.statusCode === 205) setHeader(headers, 'Content-Length', '0');
+    else if (head && !noBodyStatus) setHeader(headers, 'Content-Length', String(body.length));
+    else if (result.statusCode === 205) setHeader(headers, 'Content-Length', '0');
+    else if (noBodyStatus) removeContentLength(headers);
     setHeader(headers, 'Connection', close ? 'close' : 'keep-alive');
     if (!close) setHeader(headers, 'Keep-Alive', `timeout=${Math.floor(this.keepAliveTimeoutMs / 1000)}, max=${this.maxRequestsPerConnection}`);
     return serializeResponse(version, { ...result, headers, body: head || noBodyStatus ? Buffer.alloc(0) : body });
@@ -343,7 +379,7 @@ export class OriginApplication {
         socket.write(chunk);
         sent.push(chunk);
       }
-      const final = Buffer.concat([Buffer.from('0\r\n', 'latin1'), Buffer.from((result.trailers ?? []).map((item) => `${item.name}: ${item.value}\r\n`).join(), 'latin1'), Buffer.from('\r\n', 'latin1')]);
+      const final = Buffer.concat([Buffer.from('0\r\n', 'latin1'), Buffer.from((result.trailers ?? []).map((item) => `${item.name}: ${item.value}\r\n`).join(''), 'latin1'), Buffer.from('\r\n', 'latin1')]);
       socket.write(final);
       sent.push(final);
       if (close) socket.end();
@@ -359,7 +395,7 @@ export class OriginApplication {
     const headers = cloneHeaders(interim.headers);
     setHeader(headers, 'Date', httpDate());
     setHeader(headers, 'Server', this.serverName);
-    return Buffer.from(`${version} ${interim.statusCode} ${interim.reason ?? reasonPhrase(interim.statusCode)}\r\n${headers.map((item) => `${item.name}: ${item.value}\r\n`).join()}\r\n`, 'latin1');
+    return Buffer.from(`${version} ${interim.statusCode} ${interim.reason ?? reasonPhrase(interim.statusCode)}\r\n${headers.map((item) => `${item.name}: ${item.value}\r\n`).join('')}\r\n`, 'latin1');
   }
 
   private async route(request: ParsedRequest): Promise<OriginResult> {
@@ -389,7 +425,7 @@ export class OriginApplication {
       if (notAllowed) return notAllowed;
       const sessionId = cookieValue(request.headers, SESSION_COOKIE);
       if (!sessionId || !this.sessions.has(sessionId)) return responseText(401, '401 Unauthorized: login required\n', [header('WWW-Authenticate', 'Basic realm="isims"')]);
-      return representation(request, bytes('<!doctype html><html><body><h1>Private home</h1><p>Cookie accepted.</p></body></html>\n'), 'text/html; charset=utf-8', this.pageModified, '"private-home-v1"', 15);
+      return privateRepresentation(request, bytes('<!doctype html><html><body><h1>Private home</h1><p>Cookie accepted.</p></body></html>\n'), 'text/html; charset=utf-8', this.pageModified, '"private-home-v1"', 15);
     }
 
     if (pathname === '/protected' || pathname.startsWith('/protected/')) {
@@ -397,10 +433,29 @@ export class OriginApplication {
       if (notAllowed) return notAllowed;
       const credentials = basicCredentials(getHeader(request.headers, 'Authorization'));
       if (!credentials || credentials.username !== LOGIN_USERNAME || credentials.password !== LOGIN_PASSWORD) return responseText(401, '401 Unauthorized: Basic authentication required\n', [header('WWW-Authenticate', 'Basic realm="isims"')]);
-      return representation(request, bytes('<!doctype html><html><body><h1>Protected resource</h1><p>Basic credentials accepted.</p></body></html>\n'), 'text/html; charset=utf-8', this.pageModified, '"protected-v1"', 15);
+      return privateRepresentation(request, bytes('<!doctype html><html><body><h1>Protected resource</h1><p>Basic credentials accepted.</p></body></html>\n'), 'text/html; charset=utf-8', this.pageModified, '"protected-v1"', 15);
     }
 
     if (pathname === '/items' || pathname.startsWith('/items/')) return this.itemsRoute(request, pathname);
+
+    if (pathname === '/upload') {
+      const notAllowed = allowedMethod(request.method, 'POST, PUT, PATCH');
+      if (notAllowed) return notAllowed;
+      const disposition = getHeader(request.headers, 'Content-Disposition');
+      const fileName = getHeader(request.headers, 'X-File-Name')
+        ?? disposition?.match(/filename="?([^";]+)"?/i)?.[1]
+        ?? null;
+      return {
+        statusCode: 201,
+        headers: [header('Location', '/upload'), header('Content-Type', 'application/json; charset=utf-8')],
+        body: jsonBody({
+          receivedBytes: request.body.length,
+          contentType: getHeader(request.headers, 'Content-Type') ?? 'application/octet-stream',
+          fileName,
+          sha256: createHash('sha256').update(request.body).digest('hex'),
+        }),
+      };
+    }
 
     if (pathname === '/old' || pathname === '/temp' || pathname === '/see-other' || pathname === '/loop' || pathname === '/multiple') {
       const notAllowed = allowedMethod(request.method, 'GET, HEAD');

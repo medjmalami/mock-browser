@@ -30,6 +30,7 @@ function serializableExchange(exchange: Exchange): unknown {
     ...exchange,
     request: { ...exchange.request, bytes: buffer(exchange.request.bytes), body: buffer(exchange.request.body) },
     response: encodeResponse(exchange.response),
+    cacheResponse: encodeResponse(exchange.cacheResponse),
     attempts: exchange.attempts.map((attempt) => ({ ...attempt, request: { ...attempt.request, bytes: buffer(attempt.request.bytes), body: buffer(attempt.request.body) }, response: encodeResponse(attempt.response) })),
   };
 }
