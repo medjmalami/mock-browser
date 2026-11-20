@@ -36,7 +36,8 @@ Basic auth, redirects, negotiation, gzip, chunked/streaming responses,
 `POST /upload` route, and URL-addressable binary uploads. `PUT /uploads/name.ext`
 stores the exact request bytes in memory at that path; `GET` or `HEAD` to the
 same path serves the stored representation. Repeating the PUT replaces it.
-Uploads are cleared when the origin process stops. Login uses
+`DELETE` removes an upload only for the course Basic credentials or a valid
+session cookie. Uploads are cleared when the origin process stops. Login uses
 `mohamed` / `hkm4c`; the same credentials protect `/protected/`.
 
 The proxy accepts absolute-form HTTP requests and only forwards to the local

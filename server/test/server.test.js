@@ -156,6 +156,17 @@ test('origin stores PUT uploads at their URL and serves the exact bytes later', 
   const updated = await app.route(parsedRequest('GET /uploads/soleil.jpg HTTP/1.1\r\nHost: localhost\r\n\r\n'));
   assert.equal(updated.headers.find((item) => item.name === 'Content-Type').value, 'image/png');
   assert.deepEqual(updated.body, replacement);
+
+  const unauthorized = await app.route(parsedRequest('DELETE /uploads/soleil.jpg HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+  assert.equal(unauthorized.statusCode, 401);
+  assert.equal(unauthorized.headers.find((item) => item.name === 'WWW-Authenticate').value, 'Basic realm="isims"');
+
+  const authorization = Buffer.from('mohamed:hkm4c').toString('base64');
+  const deleted = await app.route(parsedRequest(`DELETE /uploads/soleil.jpg HTTP/1.1\r\nHost: localhost\r\nAuthorization: Basic ${authorization}\r\n\r\n`));
+  assert.equal(deleted.statusCode, 204);
+  assert.equal(deleted.body.length, 0);
+  const missing = await app.route(parsedRequest('GET /uploads/soleil.jpg HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+  assert.equal(missing.statusCode, 404);
 });
 
 test('optional raw TCP smoke test (set HTTP_LAB_RUN_NETWORK_TESTS=1)', { skip: process.env.HTTP_LAB_RUN_NETWORK_TESTS !== '1' }, async () => {

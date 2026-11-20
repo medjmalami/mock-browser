@@ -28,7 +28,7 @@ Ports are configurable with `HTTP_LAB_ORIGIN_PORT`, `HTTP_LAB_PROXY_PORT`, and `
 
 The Request panel supports ordered custom headers: add any header name/value, disable a row without deleting it, or remove it before sending. Body modes include raw text, form-urlencoded, JSON, and binary/image. Choosing a local file reads it in the sandboxed renderer and sends its `Uint8Array` bytes through the typed preload bridge; the request still receives an explicit `Content-Length` and remains visible in the raw-wire view. The selected media type is added as `Content-Type` and can be edited like any other header.
 
-For an offline upload demonstration, use `POST http://127.0.0.1:8080/upload`, choose **binary / image**, and select a file. The local origin returns JSON containing the received byte count, content type, optional `X-File-Name`/`Content-Disposition` filename, and SHA-256 digest. To store an image at a retrievable URL, use `PUT http://127.0.0.1:8080/uploads/soleil.jpg`; a later `GET` to the same URL returns the exact bytes and content type. Stored uploads are kept in memory until the server stops.
+For an offline upload demonstration, use `POST http://127.0.0.1:8080/upload`, choose **binary / image**, and select a file. The local origin returns JSON containing the received byte count, content type, optional `X-File-Name`/`Content-Disposition` filename, and SHA-256 digest. To store an image at a retrievable URL, use `PUT http://127.0.0.1:8080/uploads/soleil.jpg`; a later `GET` to the same URL returns the exact bytes and content type. Multiple URLs store multiple images, while repeating a PUT replaces that URL. Stored uploads are kept in memory until the server stops. `DELETE` requires the course Basic credentials (`mohamed` / `hkm4c`) or a valid login session cookie.
 
 ## Design decisions and assumptions
 
@@ -59,6 +59,7 @@ curl -v -X POST -H 'Content-Type: application/x-www-form-urlencoded' --data 'nam
 curl -v -X POST -H 'Content-Type: image/jpeg' -H 'X-File-Name: soleil.jpg' --data-binary @/path/to/soleil.jpg http://127.0.0.1:8080/upload
 curl -v -X PUT -H 'Content-Type: image/jpeg' --data-binary @/path/to/soleil.jpg http://127.0.0.1:8080/uploads/soleil.jpg
 curl -v http://127.0.0.1:8080/uploads/soleil.jpg --output downloaded-soleil.jpg
+curl -v -X DELETE -u mohamed:hkm4c http://127.0.0.1:8080/uploads/soleil.jpg
 curl -v -I http://127.0.0.1:8080/
 curl -v -X TRACE http://127.0.0.1:8080/
 ```
