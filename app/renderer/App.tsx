@@ -17,6 +17,8 @@ const MAX_RENDERED_WIRE_BYTES = 64 * 1024;
 const MAX_RENDERED_LOG_CHARS = 12 * 1024;
 const scenarios: Scenario[] = [
   { name: 'Page + images (HTTP/1.1)', description: 'Fetch the HTML page and its two images over a reusable connection.', options: { method: 'GET', url: 'http://127.0.0.1:8080/', version: 'HTTP/1.1', autoRedirect: false, cache: false, cookies: false } },
+  { name: 'Upload image (PUT)', description: 'Choose an image and store it at /uploads/soleil.jpg.', options: { method: 'PUT', url: 'http://127.0.0.1:8080/uploads/soleil.jpg', version: 'HTTP/1.1', bodyMode: 'binary', autoRedirect: false, cache: false, cookies: false } },
+  { name: 'Delete image (authenticated)', description: 'Delete /uploads/soleil.jpg with the course Basic credentials.', options: { method: 'DELETE', url: 'http://127.0.0.1:8080/uploads/soleil.jpg', version: 'HTTP/1.1', auth: { username: 'mohamed', password: 'hkm4c' }, autoRedirect: false, cache: false, cookies: false } },
   { name: 'Conditional GET → 304', description: 'Enable cache, fetch twice, then inspect the conditional request.', options: { method: 'GET', url: 'http://127.0.0.1:8080/static/course.txt', version: 'HTTP/1.1', headers: [{ name: 'Cache-Control', value: 'no-cache' }], cache: true, cookies: false, autoRedirect: false } },
   { name: 'ETag → 304', description: 'Exercise If-None-Match with the static resource.', options: { method: 'GET', url: 'http://127.0.0.1:8080/static/etag.txt', version: 'HTTP/1.1', headers: [{ name: 'Cache-Control', value: 'no-cache' }], cache: true, cookies: false, autoRedirect: false } },
   { name: 'Basic auth 401 → 200', description: 'Challenge and retry against /protected/.', options: { method: 'GET', url: 'http://127.0.0.1:8080/protected/', version: 'HTTP/1.1', auth: { username: 'mohamed', password: 'hkm4c' }, autoRedirect: false, cache: false, cookies: false } },
@@ -250,7 +252,7 @@ export default function App(): JSX.Element {
     setHeaders(toEditableHeaders(options.headers));
     clearUpload();
     setBody(options.body ?? '');
-    setBodyMode(headerValue(options.headers, 'Content-Type')?.includes('json') ? 'json' : headerValue(options.headers, 'Content-Type')?.includes('form') ? 'form' : 'raw');
+    setBodyMode(options.bodyMode ?? (headerValue(options.headers, 'Content-Type')?.includes('json') ? 'json' : headerValue(options.headers, 'Content-Type')?.includes('form') ? 'form' : 'raw'));
     setCache(Boolean(options.cache));
     setCookies(Boolean(options.cookies));
     setRedirects(Boolean(options.autoRedirect));
