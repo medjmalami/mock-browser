@@ -1,6 +1,6 @@
 # HTTP Lab demo script
 
-1. Choose **Upload image (PUT)**, select an image, and send it to `/uploads/soleil.jpg`; choose it again, change the URL to `/uploads/lune.jpg`, and send the second image. Then choose **Page + images (HTTP/1.1)**. Open Sequence and Connections, click **Load page**, and point out the HTML request followed by both image GET requests on a reused connection.
+1. Choose **Upload image (PUT)**, select an image, and send it to `/uploads/soleil.jpg`; choose it again, change the URL to `/uploads/lune.jpg`, and send the second image. Then choose **Page + images (HTTP/1.1)**. The client automatically caches each body and its ETag/Last-Modified validators, then revalidates each URL. Open Sequence and Connections, click **Load page**, and point out the HTML request followed by both image GET requests on a reused connection; repeat the load to observe an independent 304 or 200 for each resource.
 2. Change the version to **HTTP/1.0**, clear the Connection header, and load the same page again. Compare the three TCP establishments with HTTP/1.1.
 3. Choose **Conditional GET → 304**, send twice with cache enabled, and inspect the second request's `Cache-Control: no-cache`, `If-Modified-Since` / `If-None-Match`, and the 304 cache reuse. The response panel keeps the actual wire status 304 while rendering the cached representation.
 4. Choose **ETag → 304** and show the ETag in the response header table and cache side panel.

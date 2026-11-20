@@ -253,3 +253,59 @@ test('HttpClient uses the URL host and port for direct raw TCP connections', asy
     net.createConnection = originalCreateConnection;
   }
 });
+
+test('HttpClient automatically sends cached validators and replaces the cached representation after a new 200', async () => {
+  const originalCreateConnection = net.createConnection;
+  const requestWires = [];
+  let serverRepresentation = { etag: '"v1"', modified: 'Wed, 21 Oct 2015 07:28:00 GMT', body: 'cached' };
+  net.createConnection = () => {
+    const socket = new EventEmitter();
+    socket.destroyed = false;
+    socket.setNoDelay = () => socket;
+    socket.setTimeout = () => socket;
+    socket.write = (bytes) => {
+      const request = Buffer.from(bytes).toString('latin1');
+      requestWires.push(request);
+      const requestEtag = request.match(/^If-None-Match: ([^\r\n]+)$/m)?.[1];
+      const response = requestEtag === serverRepresentation.etag
+        ? `HTTP/1.1 304 Not Modified\r\nETag: ${serverRepresentation.etag}\r\nLast-Modified: ${serverRepresentation.modified}\r\nCache-Control: public, max-age=60\r\nConnection: close\r\n\r\n`
+        : `HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nETag: ${serverRepresentation.etag}\r\nLast-Modified: ${serverRepresentation.modified}\r\nCache-Control: public, max-age=60\r\nContent-Length: ${Buffer.byteLength(serverRepresentation.body)}\r\nConnection: close\r\n\r\n${serverRepresentation.body}`;
+      queueMicrotask(() => socket.emit('data', Buffer.from(response, 'latin1')));
+      return true;
+    };
+    socket.destroy = () => {
+      if (!socket.destroyed) {
+        socket.destroyed = true;
+        socket.emit('close');
+      }
+      return socket;
+    };
+    queueMicrotask(() => socket.emit('connect'));
+    return socket;
+  };
+
+  const client = new HttpClient();
+  const options = { url: 'http://127.0.0.1:43210/cache', cache: true, cacheMode: 'revalidate' };
+  try {
+    const first = await client.request(options);
+    assert.equal(first.response.statusCode, 200);
+    assert.equal(first.response.decodedBody.toString(), 'cached');
+
+    const second = await client.request(options);
+    assert.equal(second.response.statusCode, 304);
+    assert.equal(second.cacheResponse.decodedBody.toString(), 'cached');
+    assert.match(requestWires[1], /If-None-Match: "v1"\r\n/);
+    assert.match(requestWires[1], /If-Modified-Since: Wed, 21 Oct 2015 07:28:00 GMT\r\n/);
+
+    serverRepresentation = { etag: '"v2"', modified: 'Wed, 21 Oct 2015 07:30:00 GMT', body: 'updated' };
+    const third = await client.request(options);
+    assert.equal(third.response.statusCode, 200);
+    assert.equal(third.response.decodedBody.toString(), 'updated');
+    const cached = client.cache.list()[0];
+    assert.equal(cached.etag, '"v2"');
+    assert.equal(cached.body.toString(), 'updated');
+  } finally {
+    client.closeAll();
+    net.createConnection = originalCreateConnection;
+  }
+});

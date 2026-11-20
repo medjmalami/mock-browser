@@ -4,6 +4,7 @@ export type HttpVersion = 'HTTP/1.0' | 'HTTP/1.1';
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'CONNECT' | 'TRACE';
 export type Header = { name: string; value: string };
 export type RequestBody = string | Buffer | Uint8Array;
+export type CacheMode = 'default' | 'revalidate';
 
 export type ChunkRecord = {
   sizeHex: string;
@@ -91,6 +92,7 @@ export type RequestOptions = {
   headers?: Header[] | Record<string, string>;
   body?: RequestBody;
   cache?: boolean;
+  cacheMode?: CacheMode;
   cookies?: boolean;
   autoRedirect?: boolean;
   maxRedirects?: number;
