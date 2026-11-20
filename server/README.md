@@ -32,8 +32,11 @@ bytes, cache decisions, proxy authentication, and tunnel bytes.
 The origin implements the HTTP Lab routes from the project brief, including
 static resources, conditional requests, ranges, `/items` CRUD, login sessions,
 Basic auth, redirects, negotiation, gzip, chunked/streaming responses,
-`/status/:code`, latency/timeout demonstrations, TRACE, and a binary `/upload`
-route that reports the received byte count and SHA-256 digest. Login uses
+`/status/:code`, latency/timeout demonstrations, TRACE, a metadata-only binary
+`POST /upload` route, and URL-addressable binary uploads. `PUT /uploads/name.ext`
+stores the exact request bytes in memory at that path; `GET` or `HEAD` to the
+same path serves the stored representation. Repeating the PUT replaces it.
+Uploads are cleared when the origin process stops. Login uses
 `mohamed` / `hkm4c`; the same credentials protect `/protected/`.
 
 The proxy accepts absolute-form HTTP requests and only forwards to the local
