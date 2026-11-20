@@ -63,6 +63,14 @@ test('origin implements HEAD with GET-equivalent Content-Length and no body', as
   assert.equal(headResponse.body.length, 0);
 });
 
+test('page references the retrievable upload URLs for its images', async () => {
+  const app = new OriginApplication();
+  const page = await app.route(parsedRequest('GET / HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+  const html = page.body.toString('utf8');
+  assert.match(html, /<img src="\/uploads\/soleil\.jpg"/);
+  assert.match(html, /<img src="\/uploads\/lune\.jpg"/);
+});
+
 test('origin emits a bodyless, correctly framed 304 and a consistent 206 range', async () => {
   const app = new OriginApplication();
   const initial = await app.route(parsedRequest('GET /static/course.txt HTTP/1.1\r\nHost: localhost\r\n\r\n'));

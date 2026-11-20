@@ -92,8 +92,8 @@ function makePage(): Buffer {
   <h1>HTTP Lab</h1>
   <p>Cette page est servie par le serveur HTTP écrit sur des sockets TCP.</p>
   <p>Observe la ligne de requête, les en-têtes, les octets et la réutilisation TCP.</p>
-  <img src="/static/soleil.jpg" alt="soleil">
-  <img src="/static/lune.jpg" alt="lune">
+  <img src="/uploads/soleil.jpg" alt="soleil">
+  <img src="/uploads/lune.jpg" alt="lune">
   <p><a href="/static/readme.txt">readme.txt</a> · <a href="/static/notes.txt">notes.txt</a></p>
 </body>
 </html>\n`);

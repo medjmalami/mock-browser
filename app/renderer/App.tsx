@@ -16,7 +16,7 @@ const METHODS = Object.keys(METHOD_REFERENCE) as HttpMethod[];
 const MAX_RENDERED_WIRE_BYTES = 64 * 1024;
 const MAX_RENDERED_LOG_CHARS = 12 * 1024;
 const scenarios: Scenario[] = [
-  { name: 'Page + images (HTTP/1.1)', description: 'Fetch the HTML page and its two images over a reusable connection.', options: { method: 'GET', url: 'http://127.0.0.1:8080/', version: 'HTTP/1.1', autoRedirect: false, cache: false, cookies: false } },
+  { name: 'Page + images (HTTP/1.1)', description: 'Fetch the HTML page and /uploads/soleil.jpg plus /uploads/lune.jpg over a reusable connection.', options: { method: 'GET', url: 'http://127.0.0.1:8080/', version: 'HTTP/1.1', autoRedirect: false, cache: false, cookies: false } },
   { name: 'Upload image (PUT)', description: 'Choose an image and store it at /uploads/soleil.jpg.', options: { method: 'PUT', url: 'http://127.0.0.1:8080/uploads/soleil.jpg', version: 'HTTP/1.1', bodyMode: 'binary', autoRedirect: false, cache: false, cookies: false } },
   { name: 'Delete image (authenticated)', description: 'Delete /uploads/soleil.jpg with the course Basic credentials.', options: { method: 'DELETE', url: 'http://127.0.0.1:8080/uploads/soleil.jpg', version: 'HTTP/1.1', auth: { username: 'mohamed', password: 'hkm4c' }, autoRedirect: false, cache: false, cookies: false } },
   { name: 'Conditional GET → 304', description: 'Enable cache, fetch twice, then inspect the conditional request.', options: { method: 'GET', url: 'http://127.0.0.1:8080/static/course.txt', version: 'HTTP/1.1', headers: [{ name: 'Cache-Control', value: 'no-cache' }], cache: true, cookies: false, autoRedirect: false } },
@@ -196,6 +196,7 @@ export default function App(): JSX.Element {
   const [tunnelInput, setTunnelInput] = useState('hello from HTTP Lab\n');
   const [tunnelOutput, setTunnelOutput] = useState('');
   const [pageComparison, setPageComparison] = useState<{ http10: { objects: number; tcpConnections: number }; http11: { objects: number; tcpConnections: number } }>();
+  const [pageSequence, setPageSequence] = useState<any[]>([]);
 
   useEffect(() => {
     const unsubscribeEvent = window.httpLab.subscribe('lab:event', (event: any) => setTimeline((items) => [...items.slice(-199), event]));
@@ -251,6 +252,7 @@ export default function App(): JSX.Element {
     setVersion(options.version);
     setHeaders(toEditableHeaders(options.headers));
     clearUpload();
+    setPageSequence([]);
     setBody(options.body ?? '');
     setBodyMode(options.bodyMode ?? (headerValue(options.headers, 'Content-Type')?.includes('json') ? 'json' : headerValue(options.headers, 'Content-Type')?.includes('form') ? 'form' : 'raw'));
     setCache(Boolean(options.cache));
@@ -287,7 +289,7 @@ export default function App(): JSX.Element {
   }, [method, url, version, headers, body, bodyMode, uploadFile, cache, cookies, redirects, proxy, proxyHost, proxyPort, proxyUsername, proxyPassword, auth, credentials]);
 
   const send = async () => {
-    setBusy(true); setError(''); setTimeline([]);
+    setBusy(true); setError(''); setTimeline([]); setPageSequence([]);
     try {
       if (method === 'CONNECT') {
         const opened = await window.httpLab.openTunnel(requestOptions);
@@ -303,18 +305,19 @@ export default function App(): JSX.Element {
   };
 
   const loadPage = async () => {
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setTimeline([]); setPageSequence([]);
     try {
       const before = await window.httpLab.state() as any;
       const loadVersion = async (loadVersionValue: HttpVersion) => {
         const page = await window.httpLab.request({ ...requestOptions, method: 'GET', version: loadVersionValue, url, body: undefined, autoRedirect: true }) as WireExchange;
         const html = text(page.response?.decodedBody);
         const imageSources = [...html.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)].map((match) => match[1]);
-        await Promise.all(imageSources.map((source) => window.httpLab.request({ ...requestOptions, method: 'GET', version: loadVersionValue, url: new URL(source, url).toString(), body: undefined, autoRedirect: true })));
-        return { page, objects: imageSources.length + 1 };
+        const images = await Promise.all(imageSources.map((source) => window.httpLab.request({ ...requestOptions, method: 'GET', version: loadVersionValue, url: new URL(source, url).toString(), body: undefined, autoRedirect: true }) as Promise<WireExchange>));
+        return { page, images, objects: imageSources.length + 1 };
       };
       const [http10, http11] = await Promise.all([loadVersion('HTTP/1.0'), loadVersion('HTTP/1.1')]);
       setExchange(http11.page); setHistory((items) => [http11.page, http10.page, ...items].slice(0, 30));
+      setPageSequence([http11.page, ...http11.images].flatMap((item) => item.timeline ?? []));
       const after = await window.httpLab.state() as any;
       const oldEventIds = new Set((before.events ?? []).map((item: any) => item.payload?.id));
       const newTcpEvents = (after.events ?? []).filter((item: any) => item.channel === 'lab:event' && item.payload?.type === 'tcp-connect' && !oldEventIds.has(item.payload?.id));
@@ -342,6 +345,7 @@ export default function App(): JSX.Element {
       const result = await window.httpLab.request({ method: replayMethod as HttpMethod, url: replayUrl, version: replayVersion as HttpVersion, headers: request.headers, body: replayBody.length ? replayBody : undefined, autoRedirect: false, cache: false, cookies: false }) as WireExchange;
       setExchange(result);
       setTimeline(result.timeline ?? []);
+      setPageSequence([]);
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setBusy(false); }
   };
@@ -374,7 +378,7 @@ export default function App(): JSX.Element {
         {activeTab === 'request' && <RequestView exchange={exchange} loadWire={loadRequestWire} />}
         {activeTab === 'response' && <ResponseView exchange={exchange} contentType={contentType} bodyText={bodyText} loadWire={loadExchangeWire} />}
         {activeTab === 'timeline' && <TimelineView events={timeline.length ? timeline : exchange?.timeline ?? []} />}
-        {activeTab === 'sequence' && <SequenceView events={timeline.length ? timeline : exchange?.timeline ?? []} />}
+        {activeTab === 'sequence' && <SequenceView events={pageSequence.length ? pageSequence : timeline.length ? timeline : exchange?.timeline ?? []} />}
       </section>
       <aside className="right-column">
         <section className="panel side-panel"><div className="panel-title">Cache <button className="small-button" onClick={() => void window.httpLab.clearCache().then(refreshState)}>clear</button></div>{state.cache?.length ? state.cache.map((entry: any) => <div className="cache-card" key={entry.key}><code>{entry.url}</code><small>{entry.etag ?? 'no ETag'} · {entry.fresh ? `${Math.max(0, Math.round((entry.remainingMs ?? 0) / 1000))}s fresh` : 'stale'}</small></div>) : <p className="empty">Cache is empty.</p>}</section>
