@@ -125,6 +125,50 @@ test('origin accepts binary uploads and reports the exact received bytes', async
   });
 });
 
+test('origin stores PUT uploads at their URL and serves the exact bytes later', async () => {
+  const app = new OriginApplication();
+  const image = Buffer.from([0xff, 0xd8, 0x00, 0x7f, 0x00, 0xd9]);
+  const put = await app.route(parsedRequest(Buffer.concat([
+    Buffer.from('PUT /uploads/soleil.jpg HTTP/1.1\r\nHost: localhost\r\nContent-Type: image/jpeg\r\nContent-Length: 6\r\n\r\n', 'latin1'),
+    image,
+  ])));
+  assert.equal(put.statusCode, 201);
+  assert.equal(put.headers.find((item) => item.name === 'Location').value, '/uploads/soleil.jpg');
+  assert.deepEqual(JSON.parse(put.body.toString()), {
+    url: '/uploads/soleil.jpg',
+    stored: true,
+    receivedBytes: 6,
+    contentType: 'image/jpeg',
+    sha256: '06c8fc3e011e2e90167a8453667d45e8c0e71dc42b82a6e186b28486cc3457ca',
+  });
+
+  const get = await app.route(parsedRequest('GET /uploads/soleil.jpg HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+  assert.equal(get.statusCode, 200);
+  assert.equal(get.headers.find((item) => item.name === 'Content-Type').value, 'image/jpeg');
+  assert.deepEqual(get.body, image);
+
+  const replacement = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const overwrite = await app.route(parsedRequest(Buffer.concat([
+    Buffer.from('PUT /uploads/soleil.jpg HTTP/1.1\r\nHost: localhost\r\nContent-Type: image/png\r\nContent-Length: 4\r\n\r\n', 'latin1'),
+    replacement,
+  ])));
+  assert.equal(overwrite.statusCode, 200);
+  const updated = await app.route(parsedRequest('GET /uploads/soleil.jpg HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+  assert.equal(updated.headers.find((item) => item.name === 'Content-Type').value, 'image/png');
+  assert.deepEqual(updated.body, replacement);
+
+  const unauthorized = await app.route(parsedRequest('DELETE /uploads/soleil.jpg HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+  assert.equal(unauthorized.statusCode, 401);
+  assert.equal(unauthorized.headers.find((item) => item.name === 'WWW-Authenticate').value, 'Basic realm="isims"');
+
+  const authorization = Buffer.from('mohamed:hkm4c').toString('base64');
+  const deleted = await app.route(parsedRequest(`DELETE /uploads/soleil.jpg HTTP/1.1\r\nHost: localhost\r\nAuthorization: Basic ${authorization}\r\n\r\n`));
+  assert.equal(deleted.statusCode, 204);
+  assert.equal(deleted.body.length, 0);
+  const missing = await app.route(parsedRequest('GET /uploads/soleil.jpg HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+  assert.equal(missing.statusCode, 404);
+});
+
 test('optional raw TCP smoke test (set HTTP_LAB_RUN_NETWORK_TESTS=1)', { skip: process.env.HTTP_LAB_RUN_NETWORK_TESTS !== '1' }, async () => {
   const services = await startLabServices({ origin: { port: 0 }, proxy: { port: 0, auth: { username: 'proxy', password: 'proxy' } }, echo: { port: 0 } });
   try {

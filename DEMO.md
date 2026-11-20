@@ -11,5 +11,6 @@
 9. Choose **Range → 206** and point at `Content-Range`. Choose **TRACE echo** and compare the request wire with the body byte-for-byte.
 10. Choose **CONNECT tunnel**, type a line in the tunnel console, and show the bytes returning from the local echo service.
 11. Use the method selector and `/status/100`, `/status/401`, `/status/407`, `/status/206`, `/status/503` to show status-specific headers and the French/course explanations.
-12. Set `POST http://127.0.0.1:8080/upload`, add an `X-File-Name` header, choose **binary / image**, and select an image. Inspect the generated `Content-Type` and `Content-Length`, then compare the image bytes in the request wire with the upload response's byte count and SHA-256.
-13. Use the DNS panel for `localhost` while offline; then try a public name to demonstrate the clear no-record/offline message.
+12. Choose **Upload image (PUT)**, select an image, and inspect the generated `Content-Type` and `Content-Length`. Request the same URL with `GET` to verify that the stored response returns the exact image bytes. Repeating the PUT demonstrates replacement at the same URL.
+13. Choose **Delete image (authenticated)** and send it. The authenticated `DELETE` returns `204`; requesting the same URL afterward returns `404`.
+14. Use the DNS panel for `localhost` while offline; then try a public name to demonstrate the clear no-record/offline message.

@@ -1,9 +1,15 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'node:path';
-import { HttpClient, resolveRecords, type Exchange, type RequestOptions, type TunnelSession } from '@http-lab/client-core';
+import { HttpClient, resolveRecords, type Exchange, type RequestOptions, type SerializedRequest, type TunnelSession } from '@http-lab/client-core';
 import { startLabServices, type LabServices } from '@http-lab/server';
 
-type RendererBuffer = { base64: string; length: number };
+type RendererBuffer = { base64: string; length: number; truncated?: boolean };
+
+const MAX_RENDERER_WIRE_BYTES = 512 * 1024;
+const MAX_RENDERER_BINARY_BYTES = 8 * 1024 * 1024;
+const MAX_EVENT_PREVIEW_CHARS = 4_096;
+const MAX_STORED_LARGE_EXCHANGES = 10;
+const RAW_DETAIL_FIELDS = ['raw', 'rawRequest', 'rawResponse'] as const;
 
 function buffer(value: unknown): RendererBuffer {
   const bytes = Buffer.isBuffer(value)
@@ -16,23 +22,69 @@ function buffer(value: unknown): RendererBuffer {
   return { base64: bytes.toString('base64'), length: bytes.length };
 }
 
-function serializableExchange(exchange: Exchange): unknown {
-  const encodeResponse = (response: any) => response ? ({
-    ...response,
-    raw: buffer(response.raw),
-    rawHeaders: buffer(response.rawHeaders),
-    body: buffer(response.body),
-    compressedBody: buffer(response.compressedBody),
-    decodedBody: buffer(response.decodedBody),
-    chunks: response.chunks.map((chunk: any) => ({ ...chunk, data: buffer(chunk.data) })),
-  }) : undefined;
+function omittedBuffer(length: number): RendererBuffer {
+  return { base64: '', length, truncated: true };
+}
+
+function requestPreview(request: SerializedRequest): string {
+  const separator = request.raw.indexOf('\r\n\r\n');
+  const headers = separator >= 0 ? request.raw.slice(0, separator + 4) : request.raw.slice(0, MAX_EVENT_PREVIEW_CHARS);
+  return `${headers}[${request.body.length} body bytes omitted from the renderer; load the full wire on demand]`;
+}
+
+function serializableRequest(request: SerializedRequest, includeFullWire = false): unknown {
+  const omitWire = !includeFullWire && request.bytes.length > MAX_RENDERER_WIRE_BYTES;
+  return {
+    ...request,
+    raw: omitWire ? requestPreview(request) : request.raw,
+    bytes: omitWire ? omittedBuffer(request.bytes.length) : buffer(request.bytes),
+    body: omitWire ? omittedBuffer(request.body.length) : buffer(request.body),
+    largeBody: omitWire,
+  };
+}
+
+function serializableExchange(exchange: Exchange, includeFullWire = false): unknown {
+  const encodeResponse = (response: any) => response ? (() => {
+    const bodyLength = response.body.length;
+    const decodedLength = response.decodedBody.length;
+    const omitWire = !includeFullWire && Math.max(response.raw.length, bodyLength, response.compressedBody.length) > MAX_RENDERER_WIRE_BYTES;
+    const omitDecoded = !includeFullWire && decodedLength > MAX_RENDERER_BINARY_BYTES;
+    return {
+      ...response,
+      raw: omitWire ? omittedBuffer(response.raw.length) : buffer(response.raw),
+      rawHeaders: buffer(response.rawHeaders),
+      body: omitWire ? omittedBuffer(bodyLength) : buffer(response.body),
+      compressedBody: omitWire ? omittedBuffer(response.compressedBody.length) : buffer(response.compressedBody),
+      decodedBody: omitDecoded ? omittedBuffer(decodedLength) : buffer(response.decodedBody),
+      chunks: response.chunks.map((chunk: any) => ({ ...chunk, data: !includeFullWire && chunk.data.length > MAX_RENDERER_WIRE_BYTES ? omittedBuffer(chunk.data.length) : buffer(chunk.data) })),
+      largeBody: omitWire || omitDecoded,
+    };
+  })() : undefined;
   return {
     ...exchange,
-    request: { ...exchange.request, bytes: buffer(exchange.request.bytes), body: buffer(exchange.request.body) },
+    request: serializableRequest(exchange.request, includeFullWire),
     response: encodeResponse(exchange.response),
     cacheResponse: encodeResponse(exchange.cacheResponse),
-    attempts: exchange.attempts.map((attempt) => ({ ...attempt, request: { ...attempt.request, bytes: buffer(attempt.request.bytes), body: buffer(attempt.request.body) }, response: encodeResponse(attempt.response) })),
+    attempts: exchange.attempts.map((attempt) => ({ ...attempt, request: serializableRequest(attempt.request, includeFullWire), response: encodeResponse(attempt.response) })),
   };
+}
+
+function compactRawFields(value: Record<string, unknown>): Record<string, unknown> {
+  const compact = { ...value };
+  for (const field of RAW_DETAIL_FIELDS) {
+    const raw = compact[field];
+    if (typeof raw !== 'string' || raw.length <= MAX_EVENT_PREVIEW_CHARS) continue;
+    compact[`${field}Bytes`] = Buffer.byteLength(raw, 'latin1');
+    compact[field] = `${raw.slice(0, MAX_EVENT_PREVIEW_CHARS)}\n… [large wire detail truncated for the renderer]`;
+  }
+  return compact;
+}
+
+function compactPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const value = compactRawFields(payload as Record<string, unknown>);
+  if (value.details && typeof value.details === 'object' && !Array.isArray(value.details)) value.details = compactRawFields(value.details as Record<string, unknown>);
+  return value;
 }
 
 let windowRef: BrowserWindow | undefined;
@@ -40,11 +92,25 @@ let services: LabServices | undefined;
 let client: HttpClient;
 const tunnels = new Map<string, TunnelSession>();
 const eventHistory: unknown[] = [];
+const largeExchangeStore = new Map<string, Exchange>();
+
+function rememberExchange(exchange: Exchange): void {
+  const response = exchange.response;
+  const responseIsLarge = response && Math.max(response.raw.length, response.body.length, response.compressedBody.length, response.decodedBody.length) > MAX_RENDERER_WIRE_BYTES;
+  if (exchange.request.bytes.length <= MAX_RENDERER_WIRE_BYTES && !responseIsLarge) return;
+  largeExchangeStore.set(exchange.id, exchange);
+  while (largeExchangeStore.size > MAX_STORED_LARGE_EXCHANGES) {
+    const oldest = largeExchangeStore.keys().next().value as string | undefined;
+    if (!oldest) break;
+    largeExchangeStore.delete(oldest);
+  }
+}
 
 function broadcast(channel: string, payload: unknown): void {
-  eventHistory.push({ channel, payload });
+  const safePayload = compactPayload(payload);
+  eventHistory.push({ channel, payload: safePayload });
   if (eventHistory.length > 500) eventHistory.shift();
-  windowRef?.webContents.send(channel, payload);
+  windowRef?.webContents.send(channel, safePayload);
 }
 
 function createWindow(): BrowserWindow {
@@ -68,7 +134,21 @@ function createWindow(): BrowserWindow {
 }
 
 async function registerIpc(): Promise<void> {
-  ipcMain.handle('lab:request', async (_event, options: RequestOptions) => serializableExchange(await client.request(options)));
+  ipcMain.handle('lab:request', async (_event, options: RequestOptions) => {
+    const exchange = await client.request(options);
+    rememberExchange(exchange);
+    return serializableExchange(exchange);
+  });
+  ipcMain.handle('lab:request-wire', async (_event, id: string) => {
+    const exchange = largeExchangeStore.get(id);
+    if (!exchange) throw new Error('The large request wire is no longer available');
+    return serializableRequest(exchange.request, true);
+  });
+  ipcMain.handle('lab:exchange-wire', async (_event, id: string) => {
+    const exchange = largeExchangeStore.get(id);
+    if (!exchange) throw new Error('The large exchange wire is no longer available');
+    return serializableExchange(exchange, true);
+  });
   ipcMain.handle('lab:tunnel:open', async (_event, options: RequestOptions) => {
     const tunnel = await client.openTunnel(options);
     tunnels.set(tunnel.id, tunnel);
@@ -90,7 +170,11 @@ async function registerIpc(): Promise<void> {
     tunnels.delete(id);
     return true;
   });
-  ipcMain.handle('lab:pipeline', async (_event, options: RequestOptions[]) => (await client.pipeline(options)).map(serializableExchange));
+  ipcMain.handle('lab:pipeline', async (_event, options: RequestOptions[]) => {
+    const exchanges = await client.pipeline(options);
+    exchanges.forEach(rememberExchange);
+    return exchanges.map((exchange) => serializableExchange(exchange));
+  });
   ipcMain.handle('lab:dns', async (_event, name: string) => resolveRecords(name));
   ipcMain.handle('lab:state', async () => ({ connections: client.listConnections(), cookies: client.cookies.list(), cache: client.cache.list(), events: eventHistory }));
   ipcMain.handle('lab:cookie:delete', async (_event, value: { name: string; domain?: string; path?: string }) => client.cookies.delete(value.name, value.domain, value.path ?? '/'));

@@ -3,6 +3,8 @@ import type { RequestOptions } from '@http-lab/client-core';
 
 export type LabApi = {
   request(options: RequestOptions): Promise<unknown>;
+  requestWire(id: string): Promise<unknown>;
+  exchangeWire(id: string): Promise<unknown>;
   openTunnel(options: RequestOptions): Promise<{ id: string; connectionId: string; statusCode: number; reason: string }>;
   sendTunnel(id: string, data: string): Promise<boolean>;
   closeTunnel(id: string): Promise<boolean>;
@@ -18,6 +20,8 @@ export type LabApi = {
 
 const api: LabApi = {
   request: (options) => ipcRenderer.invoke('lab:request', options),
+  requestWire: (id) => ipcRenderer.invoke('lab:request-wire', id),
+  exchangeWire: (id) => ipcRenderer.invoke('lab:exchange-wire', id),
   openTunnel: (options) => ipcRenderer.invoke('lab:tunnel:open', options),
   sendTunnel: (id, data) => ipcRenderer.invoke('lab:tunnel:send', { id, data }),
   closeTunnel: (id) => ipcRenderer.invoke('lab:tunnel:close', id),

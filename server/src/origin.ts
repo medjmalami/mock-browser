@@ -6,6 +6,7 @@ import type { Header, OriginOptions, ParsedRequest, ResponseSpec, ServerEvent, S
 
 type OriginResult = ResponseSpec & { chunkDelays?: number[] };
 type Item = { id: string; title: string; body: string; updatedAt: string };
+type StoredResource = { body: Buffer; type: string; modified: Date; etag: string; maxAge: number };
 
 const KNOWN_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'CONNECT', 'TRACE']);
 const LOGIN_USERNAME = 'mohamed';
@@ -210,7 +211,8 @@ export class OriginApplication {
   private itemSequence = 3;
   private readonly pageBody = makePage();
   private readonly pageModified = new Date(Date.now() - 60_000);
-  private readonly resources = new Map<string, { body: Buffer; type: string; modified: Date; etag: string; maxAge: number }>();
+  private readonly resources = new Map<string, StoredResource>();
+  private readonly uploadedResources = new Map<string, StoredResource>();
 
   constructor(options: OriginOptions = {}) {
     this.serverName = options.serverName ?? 'HTTP-Lab-Origin/0.1';
@@ -439,7 +441,13 @@ export class OriginApplication {
     if (pathname === '/items' || pathname.startsWith('/items/')) return this.itemsRoute(request, pathname);
 
     if (pathname === '/upload') {
-      const notAllowed = allowedMethod(request.method, 'POST, PUT, PATCH');
+      if (request.method === 'DELETE') return this.deleteUploadedResource(request, pathname);
+      if (request.method === 'PUT') return this.storeUploadedResource(request, pathname);
+      if (request.method === 'GET' || request.method === 'HEAD') {
+        const resource = this.uploadedResources.get(pathname);
+        return resource ? representation(request, resource.body, resource.type, resource.modified, resource.etag, resource.maxAge) : notFound();
+      }
+      const notAllowed = allowedMethod(request.method, 'GET, HEAD, POST, PUT, PATCH, DELETE');
       if (notAllowed) return notAllowed;
       const disposition = getHeader(request.headers, 'Content-Disposition');
       const fileName = getHeader(request.headers, 'X-File-Name')
@@ -455,6 +463,16 @@ export class OriginApplication {
           sha256: createHash('sha256').update(request.body).digest('hex'),
         }),
       };
+    }
+
+    if (pathname === '/uploads' || pathname.startsWith('/uploads/')) {
+      if (request.method === 'DELETE') return this.deleteUploadedResource(request, pathname);
+      if (request.method === 'PUT') return this.storeUploadedResource(request, pathname);
+      const resource = this.uploadedResources.get(pathname);
+      if (request.method === 'GET' || request.method === 'HEAD') {
+        return resource ? representation(request, resource.body, resource.type, resource.modified, resource.etag, resource.maxAge) : notFound();
+      }
+      return methodNotAllowed('GET, HEAD, PUT, DELETE');
     }
 
     if (pathname === '/old' || pathname === '/temp' || pathname === '/see-other' || pathname === '/loop' || pathname === '/multiple') {
@@ -521,6 +539,44 @@ export class OriginApplication {
     }
     if (pathname.startsWith('/static/')) return notFound();
     return notFound();
+  }
+
+  private storeUploadedResource(request: ParsedRequest, pathname: string): OriginResult {
+    const existed = this.uploadedResources.has(pathname);
+    const body = Buffer.from(request.body);
+    const resource: StoredResource = {
+      body,
+      type: getHeader(request.headers, 'Content-Type') ?? 'application/octet-stream',
+      modified: nowDate(),
+      etag: entityTag(body),
+      maxAge: 60,
+    };
+    this.uploadedResources.set(pathname, resource);
+    return {
+      statusCode: existed ? 200 : 201,
+      headers: [header('Location', pathname), header('ETag', resource.etag), header('Content-Type', 'application/json; charset=utf-8')],
+      body: jsonBody({
+        url: pathname,
+        stored: true,
+        receivedBytes: body.length,
+        contentType: resource.type,
+        sha256: createHash('sha256').update(body).digest('hex'),
+      }),
+    };
+  }
+
+  private deleteUploadedResource(request: ParsedRequest, pathname: string): OriginResult {
+    if (!this.isAuthenticated(request)) return responseText(401, '401 Unauthorized: authentication required\n', [header('WWW-Authenticate', 'Basic realm="isims"')]);
+    if (!this.uploadedResources.has(pathname)) return notFound();
+    this.uploadedResources.delete(pathname);
+    return { statusCode: 204, body: Buffer.alloc(0) };
+  }
+
+  private isAuthenticated(request: ParsedRequest): boolean {
+    const credentials = basicCredentials(getHeader(request.headers, 'Authorization'));
+    if (credentials?.username === LOGIN_USERNAME && credentials.password === LOGIN_PASSWORD) return true;
+    const sessionId = cookieValue(request.headers, SESSION_COOKIE);
+    return Boolean(sessionId && this.sessions.has(sessionId));
   }
 
   private async itemsRoute(request: ParsedRequest, pathname: string): Promise<OriginResult> {

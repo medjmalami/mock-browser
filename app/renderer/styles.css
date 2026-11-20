@@ -74,6 +74,7 @@ button:disabled { opacity: .5; cursor: wait; }
 .comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }.comparison-grid > div { display: flex; flex-direction: column; gap: 4px; padding: 9px; border: 1px solid #273d59; border-radius: 5px; background: #0a1524; }.comparison-grid strong { color: #7ad0ff; }.comparison-grid span { color: #d1dceb; }.comparison-grid small { color: #8296b1; }
 .center-column > .panel, .view-stack > .panel { padding: 12px; }
 .request-line, .status-line { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; font: 700 12px ui-monospace, monospace; }
+.large-wire-note { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 8px; padding: 7px 8px; border: 1px solid #5a4827; border-radius: 5px; background: #211b10; color: #e0c27a; font-size: 11px; }
 .token-method { color: #64d2a2; }.token-url { color: #f0c674; overflow: hidden; text-overflow: ellipsis; }.token-version { color: #82c8ff; }.status-line strong { font-size: 18px; color: #f8d172; }.status-line span:first-child { color: #82c8ff; }.status-line span:nth-child(3) { color: #d8e4f4; }
 .status-badge { margin-left: auto; padding: 3px 7px; border-radius: 4px; font-size: 10px; }.status-1xx { background: #293b55; color: #a8c4e7; }.status-2xx { background: #124b43; color: #6fe2bd; }.status-3xx { background: #514214; color: #f7d773; }.status-4xx { background: #552c35; color: #ffa8ae; }.status-5xx { background: #532522; color: #ff9c8d; }
 .status-explanation { margin: -3px 0 12px; color: #9faec2; font-size: 12px; }
