@@ -2,16 +2,19 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type JSX, type 
 import { METHOD_REFERENCE, REQUEST_HEADER_REFERENCE, RESPONSE_HEADER_REFERENCE, STATUS_REFERENCE, statusMeaning } from './reference';
 import type { Header, HttpMethod, HttpVersion } from '@http-lab/client-core';
 
-type WireBuffer = { base64: string; length: number };
+type WireBuffer = { base64: string; length: number; truncated?: boolean };
 type WireChunk = { sizeHex: string; sizeDecimal: number; data: WireBuffer; extension?: string };
-type WireResponse = { version: string; statusCode: number; reason: string; headers: Header[]; body: WireBuffer; raw: WireBuffer; rawHeaders: WireBuffer; chunks: WireChunk[]; trailers: Header[]; complete: boolean; connectionClose: boolean; usedChunked: boolean; compressedBody: WireBuffer; decodedBody: WireBuffer };
-type WireExchange = { id: string; request: { raw: string; requestLine: string; headers: Header[]; body: WireBuffer; bytes: WireBuffer }; response?: WireResponse; cacheResponse?: WireResponse; attempts: Array<{ request: { raw: string }; response?: WireResponse; error?: string; connectionId?: string }>; timeline: any[]; redirectChain: string[]; fromCache: boolean; cacheRevalidated: boolean; connectionId?: string; connectionReuseCount?: number; error?: string };
+type WireRequest = { raw: string; requestLine: string; headers: Header[]; body: WireBuffer; bytes: WireBuffer; largeBody?: boolean };
+type WireResponse = { version: string; statusCode: number; reason: string; headers: Header[]; body: WireBuffer; raw: WireBuffer; rawHeaders: WireBuffer; chunks: WireChunk[]; trailers: Header[]; complete: boolean; connectionClose: boolean; usedChunked: boolean; compressedBody: WireBuffer; decodedBody: WireBuffer; largeBody?: boolean };
+type WireExchange = { id: string; request: WireRequest; response?: WireResponse; cacheResponse?: WireResponse; attempts: Array<{ request: WireRequest; response?: WireResponse; error?: string; connectionId?: string }>; timeline: any[]; redirectChain: string[]; fromCache: boolean; cacheRevalidated: boolean; connectionId?: string; connectionReuseCount?: number; error?: string };
 type Scenario = { name: string; description: string; options: any };
 type EditableHeader = Header & { enabled: boolean };
 type UploadFile = { file: File; bytes: Uint8Array; name: string; type: string; size: number };
 type BodyMode = 'raw' | 'form' | 'json' | 'binary';
 
 const METHODS = Object.keys(METHOD_REFERENCE) as HttpMethod[];
+const MAX_RENDERED_WIRE_BYTES = 64 * 1024;
+const MAX_RENDERED_LOG_CHARS = 12 * 1024;
 const scenarios: Scenario[] = [
   { name: 'Page + images (HTTP/1.1)', description: 'Fetch the HTML page and its two images over a reusable connection.', options: { method: 'GET', url: 'http://127.0.0.1:8080/', version: 'HTTP/1.1', autoRedirect: false, cache: false, cookies: false } },
   { name: 'Conditional GET → 304', description: 'Enable cache, fetch twice, then inspect the conditional request.', options: { method: 'GET', url: 'http://127.0.0.1:8080/static/course.txt', version: 'HTTP/1.1', headers: [{ name: 'Cache-Control', value: 'no-cache' }], cache: true, cookies: false, autoRedirect: false } },
@@ -34,8 +37,23 @@ function decode(value?: WireBuffer): Uint8Array {
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
+function decodePrefix(value?: WireBuffer, maxBytes = MAX_RENDERED_WIRE_BYTES): Uint8Array {
+  if (!value || value.truncated) return new Uint8Array();
+  const binary = atob(value.base64).slice(0, maxBytes);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
 function text(value?: WireBuffer): string {
+  if (value?.truncated) return `[${value.length.toLocaleString()} bytes omitted from the renderer]`;
   return new TextDecoder('latin1').decode(decode(value));
+}
+
+function textPreview(value?: WireBuffer, maxBytes = MAX_RENDERED_WIRE_BYTES): { text: string; truncated: boolean } {
+  if (!value) return { text: '', truncated: false };
+  if (value.truncated) return { text: `[${value.length.toLocaleString()} bytes omitted from the renderer]`, truncated: true };
+  const binary = atob(value.base64);
+  const limited = binary.length > maxBytes ? binary.slice(0, maxBytes) : binary;
+  return { text: new TextDecoder('latin1').decode(Uint8Array.from(limited, (char) => char.charCodeAt(0))), truncated: binary.length > maxBytes };
 }
 
 function visible(value: string): string {
@@ -47,11 +65,11 @@ function headerValue(headers: Header[] | undefined, name: string): string | unde
 }
 
 function jsonBody(response?: WireResponse): string {
-  const raw = text(response?.decodedBody);
+  const raw = textPreview(response?.decodedBody).text;
   try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
 }
 
-function hexDump(bytes: Uint8Array): string {
+function hexDump(bytes: Uint8Array, totalLength = bytes.length): string {
   const lines: string[] = [];
   for (let offset = 0; offset < bytes.length; offset += 16) {
     const part = bytes.slice(offset, offset + 16);
@@ -59,7 +77,13 @@ function hexDump(bytes: Uint8Array): string {
     const ascii = [...part].map((value) => value >= 32 && value < 127 ? String.fromCharCode(value) : '.').join('');
     lines.push(`${offset.toString(16).padStart(8, '0')}  ${hex}  |${ascii}|`);
   }
+  if (totalLength > bytes.length) lines.push(`… hex preview truncated; ${totalLength.toLocaleString()} bytes total`);
   return lines.join('\n');
+}
+
+function logText(log: unknown): string {
+  const value = typeof log === 'string' ? log : JSON.stringify(log, null, 0);
+  return value.length > MAX_RENDERED_LOG_CHARS ? `${value.slice(0, MAX_RENDERED_LOG_CHARS)}\n… log preview truncated` : value;
 }
 
 function classNameFor(code: number): string {
@@ -303,14 +327,17 @@ export default function App(): JSX.Element {
   };
 
   const lookupDns = async () => { setDnsRecords(await window.httpLab.dns(dnsName) as any[]); };
+  const loadRequestWire = async (id: string) => await window.httpLab.requestWire(id) as WireRequest;
+  const loadExchangeWire = async (id: string) => await window.httpLab.exchangeWire(id) as WireExchange;
   const replay = async (item: WireExchange) => {
-    const [replayMethod, replayTarget, replayVersion] = item.request.requestLine.split(' ');
-    const replayHost = headerValue(item.request.headers, 'Host') ?? '127.0.0.1:8080';
-    const replayUrl = replayTarget.startsWith('http://') || replayTarget.startsWith('https://') ? replayTarget : `http://${replayHost}${replayTarget}`;
     setBusy(true);
     try {
-      const replayBody = decode(item.request.body);
-      const result = await window.httpLab.request({ method: replayMethod as HttpMethod, url: replayUrl, version: replayVersion as HttpVersion, headers: item.request.headers, body: replayBody.length ? replayBody : undefined, autoRedirect: false, cache: false, cookies: false }) as WireExchange;
+      const request = item.request.largeBody ? await loadRequestWire(item.id) : item.request;
+      const [replayMethod, replayTarget, replayVersion] = request.requestLine.split(' ');
+      const replayHost = headerValue(request.headers, 'Host') ?? '127.0.0.1:8080';
+      const replayUrl = replayTarget.startsWith('http://') || replayTarget.startsWith('https://') ? replayTarget : `http://${replayHost}${replayTarget}`;
+      const replayBody = decode(request.body);
+      const result = await window.httpLab.request({ method: replayMethod as HttpMethod, url: replayUrl, version: replayVersion as HttpVersion, headers: request.headers, body: replayBody.length ? replayBody : undefined, autoRedirect: false, cache: false, cookies: false }) as WireExchange;
       setExchange(result);
       setTimeline(result.timeline ?? []);
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
@@ -318,7 +345,7 @@ export default function App(): JSX.Element {
   };
   const response = exchange?.response;
   const contentType = headerValue(response?.headers, 'Content-Type') ?? '';
-  const bodyText = text(response?.decodedBody);
+  const bodyText = response && (/^text\//i.test(contentType) || /json|javascript|xml/i.test(contentType)) ? textPreview(response.decodedBody).text : '';
   const matchesReference = (value: string) => value.toLowerCase().includes(referenceQuery.trim().toLowerCase());
 
   return <main className="app-shell">
@@ -342,8 +369,8 @@ export default function App(): JSX.Element {
         {error && <div className="error-banner">{error}</div>}
         {pageComparison && <section className="panel comparison-panel"><div className="panel-title">Load page · connection comparison</div><div className="comparison-grid"><div><strong>HTTP/1.0</strong><span>{pageComparison.http10.objects} objects · {pageComparison.http10.tcpConnections} TCP connections</span><small>new connection per object</small></div><div><strong>HTTP/1.1</strong><span>{pageComparison.http11.objects} objects · {pageComparison.http11.tcpConnections} TCP connections</span><small>persistent connection reuse</small></div></div></section>}
         {tunnel && <section className="panel tunnel-panel"><div className="panel-title"><span>CONNECT tunnel</span><span className="muted">{tunnel.connectionId} · {tunnel.statusCode} {tunnel.reason}</span></div><div className="tunnel-layout"><div><textarea value={tunnelInput} onChange={(event) => setTunnelInput(event.target.value)} /><button className="primary" onClick={() => void window.httpLab.sendTunnel(tunnel.id, tunnelInput)}>send bytes</button><button className="secondary" onClick={() => void window.httpLab.closeTunnel(tunnel.id).then(() => setTunnel(undefined))}>close</button></div><pre>{tunnelOutput || 'Echoed bytes will appear here…'}</pre></div></section>}
-        {activeTab === 'request' && <RequestView exchange={exchange} />}
-        {activeTab === 'response' && <ResponseView exchange={exchange} contentType={contentType} bodyText={bodyText} />}
+        {activeTab === 'request' && <RequestView exchange={exchange} loadWire={loadRequestWire} />}
+        {activeTab === 'response' && <ResponseView exchange={exchange} contentType={contentType} bodyText={bodyText} loadWire={loadExchangeWire} />}
         {activeTab === 'timeline' && <TimelineView events={timeline.length ? timeline : exchange?.timeline ?? []} />}
         {activeTab === 'sequence' && <SequenceView events={timeline.length ? timeline : exchange?.timeline ?? []} />}
       </section>
@@ -351,28 +378,63 @@ export default function App(): JSX.Element {
         <section className="panel side-panel"><div className="panel-title">Cache <button className="small-button" onClick={() => void window.httpLab.clearCache().then(refreshState)}>clear</button></div>{state.cache?.length ? state.cache.map((entry: any) => <div className="cache-card" key={entry.key}><code>{entry.url}</code><small>{entry.etag ?? 'no ETag'} · {entry.fresh ? `${Math.max(0, Math.round((entry.remainingMs ?? 0) / 1000))}s fresh` : 'stale'}</small></div>) : <p className="empty">Cache is empty.</p>}</section>
         <section className="panel side-panel"><div className="panel-title">History</div>{history.map((item) => <button className="history-row" key={item.id} onClick={() => void replay(item)}><span>{item.request.requestLine}</span><small>{item.response?.statusCode ?? 'error'} · click to replay</small></button>)}</section>
         <section className="panel side-panel"><div className="panel-title">DNS</div><div className="dns-form"><input value={dnsName} onChange={(event) => setDnsName(event.target.value)} /><button className="small-button" onClick={() => void lookupDns()}>lookup</button></div>{dnsRecords.length ? <div className="dns-table"><div>name | class | TTL | type | data</div>{dnsRecords.map((record) => <div key={`${record.type}-${record.data}`}>{record.name} | IN | {record.ttl ?? '—'} | {record.type} | {record.data}</div>)}</div> : <p className="empty">Offline or no records. Try localhost.</p>}</section>
-        <section className="panel side-panel logs"><div className="panel-title">Server log</div>{serverLogs.slice(-20).reverse().map((log, index) => <pre key={index}>{typeof log === 'string' ? log : JSON.stringify(log, null, 0)}</pre>)}</section>
+        <section className="panel side-panel logs"><div className="panel-title">Server log</div>{serverLogs.slice(-20).reverse().map((log, index) => <pre key={index}>{logText(log)}</pre>)}</section>
       </aside>
     </section>
     <section className="reference panel"><div className="panel-title"><span>Course reference</span><input className="reference-search" value={referenceQuery} onChange={(event) => setReferenceQuery(event.target.value)} placeholder="search methods, headers, statuses…" /></div><div className="reference-grid"><div><h3>Methods</h3>{Object.values(METHOD_REFERENCE).filter((item) => matchesReference(`${item.name} ${item.description}`)).map((item) => <div className="reference-row" key={item.name}><code>{item.name}</code><span>{item.description}</span></div>)}</div><div><h3>Statuses</h3>{STATUS_REFERENCE.filter((item) => matchesReference(`${item.code} ${item.name} ${item.meaning}`)).map((item) => <div className="reference-row" key={item.code}><code>{item.code}</code><span>{item.name}: {item.meaning}</span></div>)}</div><div><h3>Headers</h3>{Object.entries({ ...REQUEST_HEADER_REFERENCE, ...RESPONSE_HEADER_REFERENCE }).filter(([name, explanation]) => matchesReference(`${name} ${explanation}`)).map(([name, explanation]) => <div className="reference-row" key={name}><code>{name}</code><span>{explanation}</span></div>)}</div></div></section>
   </main>;
 }
 
-function RequestView({ exchange }: { exchange?: WireExchange }): JSX.Element {
-  const raw = exchange?.request.raw ?? '';
+function RequestView({ exchange, loadWire }: { exchange?: WireExchange; loadWire: (id: string) => Promise<WireRequest> }): JSX.Element {
+  const [loadedRaw, setLoadedRaw] = useState<string>();
+  const [loading, setLoading] = useState(false);
+  useEffect(() => { setLoadedRaw(undefined); setLoading(false); }, [exchange?.id]);
+  const raw = loadedRaw ?? exchange?.request.raw ?? '';
   const separator = raw.indexOf('\r\n\r\n');
   const head = separator >= 0 ? raw.slice(0, separator + 4) : raw;
   const body = separator >= 0 ? raw.slice(separator + 4) : '';
-  return <div className="view-stack"><section className="panel"><div className="panel-title">Request as sent</div>{exchange ? <><div className="request-line"><span className="token-method">{exchange.request.requestLine.split(' ')[0]}</span><span className="token-url">{exchange.request.requestLine.split(' ')[1]}</span><span className="token-version">{exchange.request.requestLine.split(' ')[2]}</span></div><pre className="wire">{visible(head)}<span className="blank-marker">↵ blank line</span>{visible(body)}</pre></> : <p className="empty">Send a request to inspect the exact request bytes.</p>}</section></div>;
+  const loadFullWire = async () => {
+    if (!exchange) return;
+    setLoading(true);
+    try {
+      const request = await loadWire(exchange.id);
+      setLoadedRaw(request.raw);
+    } catch {
+      setLoadedRaw('[The full request wire is no longer available]');
+    } finally {
+      setLoading(false);
+    }
+  };
+  return <div className="view-stack"><section className="panel"><div className="panel-title">Request as sent</div>{exchange ? <>
+    <div className="request-line"><span className="token-method">{exchange.request.requestLine.split(' ')[0]}</span><span className="token-url">{exchange.request.requestLine.split(' ')[1]}</span><span className="token-version">{exchange.request.requestLine.split(' ')[2]}</span></div>
+    {exchange.request.largeBody && !loadedRaw && <div className="large-wire-note"><span>{exchange.request.body.length.toLocaleString()} body bytes are kept out of the automatic UI transfer.</span><button className="small-button" disabled={loading} onClick={() => void loadFullWire()}>{loading ? 'Loading…' : 'Load full request wire'}</button></div>}
+    <pre className="wire">{visible(head)}<span className="blank-marker">↵ blank line</span>{visible(body)}</pre>
+  </> : <p className="empty">Send a request to inspect the exact request bytes.</p>}</section></div>;
 }
 
-function ResponseView({ exchange, contentType, bodyText }: { exchange?: WireExchange; contentType: string; bodyText: string }): JSX.Element {
-  const response = exchange?.response;
+function ResponseView({ exchange, contentType, bodyText, loadWire }: { exchange?: WireExchange; contentType: string; bodyText: string; loadWire: (id: string) => Promise<WireExchange> }): JSX.Element {
+  const [loadedResponse, setLoadedResponse] = useState<WireResponse>();
+  const [loading, setLoading] = useState(false);
+  useEffect(() => { setLoadedResponse(undefined); setLoading(false); }, [exchange?.id]);
+  const response = loadedResponse ?? exchange?.response;
   const cachedResponse = exchange?.cacheResponse;
   const representation = response?.statusCode === 304 ? cachedResponse ?? response : response;
   const [bodyTab, setBodyTab] = useState('rendered');
   const status = response ? statusMeaning(response.statusCode) : undefined;
   const image = contentType.startsWith('image/');
+  const renderedImage = image && Boolean(representation?.decodedBody.base64) && !representation?.decodedBody.truncated;
+  const rawPreview = textPreview(response?.raw);
+  const bodyPreview = textPreview(response?.body);
+  const loadFullResponse = async () => {
+    if (!exchange) return;
+    setLoading(true);
+    try {
+      const fullExchange = await loadWire(exchange.id);
+      setLoadedResponse(fullExchange.response);
+    } finally {
+      setLoading(false);
+    }
+  };
   return <div className="view-stack">
     <section className="panel">{response ? <>
       <div className="status-line"><span>{response.version}</span><strong>{response.statusCode}</strong><span>{response.reason}</span><em className={`status-badge status-${classNameFor(response.statusCode)}`}>{classNameFor(response.statusCode)}</em></div>
@@ -382,12 +444,13 @@ function ResponseView({ exchange, contentType, bodyText }: { exchange?: WireExch
       <div className="headers-table">{response.headers.map((header, index) => <div className="response-header" key={`${index}-${header.name}`} title={RESPONSE_HEADER_REFERENCE[header.name] ?? REQUEST_HEADER_REFERENCE[header.name] ?? 'HTTP header'}><code>{header.name}</code><span>{header.value}</span></div>)}</div>
     </> : <p className="empty">No response yet.</p>}</section>
     {response && <section className="panel body-panel"><div className="body-tabs">{['rendered', 'raw', 'hex', 'chunks'].map((tab) => <button className={bodyTab === tab ? 'active' : ''} key={tab} onClick={() => setBodyTab(tab)}>{tab}</button>)}</div>
-      {bodyTab === 'rendered' && (image ? <img className="image-preview" src={`data:${contentType};base64,${representation?.decodedBody.base64}`} /> : contentType.includes('text/html') ? <iframe className="render-frame" sandbox="" srcDoc={cachedResponse ? text(representation?.decodedBody) : bodyText} title="Sandboxed response preview" /> : <pre className="body-output">{contentType.includes('json') ? jsonBody(representation) : cachedResponse ? text(representation?.decodedBody) : bodyText}</pre>)}
-      {bodyTab === 'raw' && <pre className="body-output">{visible(text(response.body))}</pre>}
-      {bodyTab === 'hex' && <pre className="body-output">{hexDump(decode(response.body))}</pre>}
+      {response.largeBody && !loadedResponse && <div className="large-wire-note"><span>Large response wire is summarized to keep the renderer responsive.</span><button className="small-button" disabled={loading} onClick={() => void loadFullResponse()}>{loading ? 'Loading…' : 'Load full response wire'}</button></div>}
+      {bodyTab === 'rendered' && (image ? renderedImage ? <img className="image-preview" src={`data:${contentType};base64,${representation?.decodedBody.base64}`} /> : <p className="empty">This image is too large to render in the UI ({(representation?.decodedBody.length ?? 0).toLocaleString()} bytes).</p> : contentType.includes('text/html') ? <iframe className="render-frame" sandbox="" srcDoc={cachedResponse ? textPreview(representation?.decodedBody).text : bodyText} title="Sandboxed response preview" /> : <pre className="body-output">{contentType.includes('json') ? jsonBody(representation) : cachedResponse ? textPreview(representation?.decodedBody).text : bodyText}</pre>)}
+      {bodyTab === 'raw' && <pre className="body-output">{visible(bodyPreview.text)}{bodyPreview.truncated ? '\n… raw body preview truncated' : ''}</pre>}
+      {bodyTab === 'hex' && <pre className="body-output">{hexDump(decodePrefix(response.body), response.body.length)}</pre>}
       {bodyTab === 'chunks' && <div className="chunk-view"><div className="chunk-summary">{response.chunks.length} chunks · decoded total <strong>{response.chunks.reduce((sum, chunk) => sum + chunk.sizeDecimal, 0)} bytes</strong> · course example expects 10h + 6h = 22</div>{response.chunks.map((chunk, index) => <div className="chunk-row" key={index}><code>{chunk.sizeHex}</code><span>{chunk.sizeDecimal}</span><pre>{text(chunk.data)}</pre><small>{chunk.extension ?? ''}</small></div>)}{response.trailers.length > 0 && <div className="trailers">Trailers: {response.trailers.map((header) => `${header.name}: ${header.value}`).join(' · ')}</div>}</div>}
     </section>}
-    {response && <section className="panel"><div className="panel-title">Raw response wire</div><pre className="wire">{visible(text(response.raw))}</pre><div className="compression-note">compressed {response.compressedBody.length} B · decoded {response.decodedBody.length} B</div></section>}
+    {response && <section className="panel"><div className="panel-title">Raw response wire</div><pre className="wire">{visible(rawPreview.text)}{rawPreview.truncated ? '\n… raw response wire preview truncated' : ''}</pre><div className="compression-note">compressed {response.compressedBody.length} B · decoded {response.decodedBody.length} B</div></section>}
   </div>;
 }
 

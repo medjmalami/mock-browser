@@ -30,6 +30,8 @@ The Request panel supports ordered custom headers: add any header name/value, di
 
 For an offline upload demonstration, use `POST http://127.0.0.1:8080/upload`, choose **binary / image**, and select a file. The local origin returns JSON containing the received byte count, content type, optional `X-File-Name`/`Content-Disposition` filename, and SHA-256 digest. To store an image at a retrievable URL, use `PUT http://127.0.0.1:8080/uploads/soleil.jpg`; a later `GET` to the same URL returns the exact bytes and content type. Multiple URLs store multiple images, while repeating a PUT replaces that URL. Stored uploads are kept in memory until the server stops. `DELETE` requires the course Basic credentials (`mohamed` / `hkm4c`) or a valid login session cookie.
 
+Large binary exchanges remain exact in the main-process wire capture, while the renderer transfers only bounded previews for automatic logs and raw/hex panels. Image responses are still rendered normally when they are within the renderer’s safe preview limit; a large image shows its byte count instead of freezing the window. Large request wires can be loaded explicitly from the Request panel when needed.
+
 ## Design decisions and assumptions
 
 - Networking is owned by Electron's main process or the standalone server. The renderer has `contextIsolation: true`, `nodeIntegration: false`, and a sandboxed preload bridge.

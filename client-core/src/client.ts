@@ -421,7 +421,7 @@ export class HttpClient {
     emit(wasUsed ? 'connection-reused' : 'tcp-connect', wasUsed ? `Reused ${connection.info.id}` : `TCP connected to ${built.host}:${built.port}`, { reuseCount: connection.info.reuseCount, version: requestVersion }, connection.info.id);
     const cookie = getHeader(built.request.headers, 'Cookie');
     if (cookie) emit('cookie-sent', `Sent Cookie header (${cookie.split(';').length} cookie${cookie.includes(';') ? 's' : ''})`, undefined, connection.info.id);
-    emit('request-sent', `Sent ${built.request.requestLine}`, { raw: built.request.raw }, connection.info.id);
+    emit('request-sent', `Sent ${built.request.requestLine}`, { wireBytes: built.request.bytes.length, bodyBytes: built.request.body.length }, connection.info.id);
     const response = await connection.send(built.request, method);
     emit('first-byte', `First response byte received from ${connection.info.id}`, undefined, connection.info.id);
     emit('headers-received', `Received ${response.version} ${response.statusCode} ${response.reason}`, { headers: response.headers }, connection.info.id);

@@ -219,6 +219,7 @@ test('HttpCache tracks freshness, expiry, validators, and refreshes metadata aft
 test('HttpClient uses the URL host and port for direct raw TCP connections', async () => {
   const originalCreateConnection = net.createConnection;
   let connectionOptions;
+  const events = [];
   net.createConnection = (options) => {
     connectionOptions = options;
     const socket = new EventEmitter();
@@ -238,12 +239,15 @@ test('HttpClient uses the URL host and port for direct raw TCP connections', asy
     return socket;
   };
 
-  const client = new HttpClient();
+  const client = new HttpClient({ onEvent: (event) => events.push(event) });
   try {
     const exchange = await client.request({ url: 'http://127.0.0.1:43210/direct' });
     assert.equal(exchange.response.statusCode, 200);
     assert.equal(exchange.response.body.toString(), 'ok');
     assert.deepEqual(connectionOptions, { host: '127.0.0.1', port: 43210 });
+    const requestEvent = events.find((event) => event.type === 'request-sent');
+    assert.equal(requestEvent.details.raw, undefined);
+    assert.equal(requestEvent.details.wireBytes, exchange.request.bytes.length);
   } finally {
     client.closeAll();
     net.createConnection = originalCreateConnection;
