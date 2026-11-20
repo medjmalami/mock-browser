@@ -32,6 +32,8 @@ For an offline upload demonstration, use `POST http://127.0.0.1:8080/upload`, ch
 
 Large binary exchanges remain exact in the main-process wire capture, while the renderer transfers only bounded previews for automatic logs and raw/hex panels. Image responses are still rendered normally when they are within the renderer’s safe preview limit; a large image shows its byte count instead of freezing the window. Large request wires can be loaded explicitly from the Request panel when needed.
 
+The **Page + images** loader fetches the HTML and each uploaded image through the raw client. For the sandboxed HTML preview, the fetched image bytes are inlined as data URLs; the preview therefore does not create hidden renderer-side network requests, while the real image GET exchanges remain visible in Sequence.
+
 ## Design decisions and assumptions
 
 - Networking is owned by Electron's main process or the standalone server. The renderer has `contextIsolation: true`, `nodeIntegration: false`, and a sandboxed preload bridge.

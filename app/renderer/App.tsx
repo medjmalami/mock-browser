@@ -66,6 +66,29 @@ function headerValue(headers: Header[] | undefined, name: string): string | unde
   return headers?.find((header) => header.name.toLowerCase() === name.toLowerCase())?.value;
 }
 
+function inlineFetchedImages(html: string, pageUrl: string, sources: string[], images: WireExchange[]): string {
+  const previews = new Map<string, string>();
+  sources.forEach((source, index) => {
+    const response = images[index]?.response;
+    const contentType = headerValue(response?.headers, 'Content-Type') ?? '';
+    const body = response?.decodedBody;
+    if (!response || response.statusCode < 200 || response.statusCode >= 300 || !contentType.toLowerCase().startsWith('image/') || !body?.base64 || body.truncated) return;
+    try {
+      previews.set(new URL(source, pageUrl).toString(), `data:${contentType};base64,${body.base64}`);
+    } catch {
+      // Keep an invalid image source unchanged in the teaching preview.
+    }
+  });
+  return html.replace(/(<img\b[^>]*\bsrc\s*=\s*)(["'])([^"']+)\2/gi, (match: string, prefix: string, quote: string, source: string) => {
+    try {
+      const dataUrl = previews.get(new URL(source, pageUrl).toString());
+      return dataUrl ? `${prefix}${quote}${dataUrl}${quote}` : match;
+    } catch {
+      return match;
+    }
+  });
+}
+
 function jsonBody(response?: WireResponse): string {
   const raw = textPreview(response?.decodedBody).text;
   try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
@@ -197,6 +220,7 @@ export default function App(): JSX.Element {
   const [tunnelOutput, setTunnelOutput] = useState('');
   const [pageComparison, setPageComparison] = useState<{ http10: { objects: number; tcpConnections: number }; http11: { objects: number; tcpConnections: number } }>();
   const [pageSequence, setPageSequence] = useState<any[]>([]);
+  const [pagePreviewHtml, setPagePreviewHtml] = useState<string>();
 
   useEffect(() => {
     const unsubscribeEvent = window.httpLab.subscribe('lab:event', (event: any) => setTimeline((items) => [...items.slice(-199), event]));
@@ -253,6 +277,7 @@ export default function App(): JSX.Element {
     setHeaders(toEditableHeaders(options.headers));
     clearUpload();
     setPageSequence([]);
+    setPagePreviewHtml(undefined);
     setBody(options.body ?? '');
     setBodyMode(options.bodyMode ?? (headerValue(options.headers, 'Content-Type')?.includes('json') ? 'json' : headerValue(options.headers, 'Content-Type')?.includes('form') ? 'form' : 'raw'));
     setCache(Boolean(options.cache));
@@ -289,7 +314,7 @@ export default function App(): JSX.Element {
   }, [method, url, version, headers, body, bodyMode, uploadFile, cache, cookies, redirects, proxy, proxyHost, proxyPort, proxyUsername, proxyPassword, auth, credentials]);
 
   const send = async () => {
-    setBusy(true); setError(''); setTimeline([]); setPageSequence([]);
+    setBusy(true); setError(''); setTimeline([]); setPageSequence([]); setPagePreviewHtml(undefined);
     try {
       if (method === 'CONNECT') {
         const opened = await window.httpLab.openTunnel(requestOptions);
@@ -305,7 +330,7 @@ export default function App(): JSX.Element {
   };
 
   const loadPage = async () => {
-    setBusy(true); setError(''); setTimeline([]); setPageSequence([]);
+    setBusy(true); setError(''); setTimeline([]); setPageSequence([]); setPagePreviewHtml(undefined);
     try {
       const before = await window.httpLab.state() as any;
       const loadVersion = async (loadVersionValue: HttpVersion) => {
@@ -313,11 +338,12 @@ export default function App(): JSX.Element {
         const html = text(page.response?.decodedBody);
         const imageSources = [...html.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)].map((match) => match[1]);
         const images = await Promise.all(imageSources.map((source) => window.httpLab.request({ ...requestOptions, method: 'GET', version: loadVersionValue, url: new URL(source, url).toString(), body: undefined, autoRedirect: true }) as Promise<WireExchange>));
-        return { page, images, objects: imageSources.length + 1 };
+        return { page, images, previewHtml: inlineFetchedImages(html, url, imageSources, images), objects: imageSources.length + 1 };
       };
       const [http10, http11] = await Promise.all([loadVersion('HTTP/1.0'), loadVersion('HTTP/1.1')]);
       setExchange(http11.page); setHistory((items) => [http11.page, http10.page, ...items].slice(0, 30));
       setPageSequence([http11.page, ...http11.images].flatMap((item) => item.timeline ?? []));
+      setPagePreviewHtml(http11.previewHtml);
       const after = await window.httpLab.state() as any;
       const oldEventIds = new Set((before.events ?? []).map((item: any) => item.payload?.id));
       const newTcpEvents = (after.events ?? []).filter((item: any) => item.channel === 'lab:event' && item.payload?.type === 'tcp-connect' && !oldEventIds.has(item.payload?.id));
@@ -346,6 +372,7 @@ export default function App(): JSX.Element {
       setExchange(result);
       setTimeline(result.timeline ?? []);
       setPageSequence([]);
+      setPagePreviewHtml(undefined);
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setBusy(false); }
   };
@@ -376,7 +403,7 @@ export default function App(): JSX.Element {
         {pageComparison && <section className="panel comparison-panel"><div className="panel-title">Load page · connection comparison</div><div className="comparison-grid"><div><strong>HTTP/1.0</strong><span>{pageComparison.http10.objects} objects · {pageComparison.http10.tcpConnections} TCP connections</span><small>new connection per object</small></div><div><strong>HTTP/1.1</strong><span>{pageComparison.http11.objects} objects · {pageComparison.http11.tcpConnections} TCP connections</span><small>persistent connection reuse</small></div></div></section>}
         {tunnel && <section className="panel tunnel-panel"><div className="panel-title"><span>CONNECT tunnel</span><span className="muted">{tunnel.connectionId} · {tunnel.statusCode} {tunnel.reason}</span></div><div className="tunnel-layout"><div><textarea value={tunnelInput} onChange={(event) => setTunnelInput(event.target.value)} /><button className="primary" onClick={() => void window.httpLab.sendTunnel(tunnel.id, tunnelInput)}>send bytes</button><button className="secondary" onClick={() => void window.httpLab.closeTunnel(tunnel.id).then(() => setTunnel(undefined))}>close</button></div><pre>{tunnelOutput || 'Echoed bytes will appear here…'}</pre></div></section>}
         {activeTab === 'request' && <RequestView exchange={exchange} loadWire={loadRequestWire} />}
-        {activeTab === 'response' && <ResponseView exchange={exchange} contentType={contentType} bodyText={bodyText} loadWire={loadExchangeWire} />}
+        {activeTab === 'response' && <ResponseView exchange={exchange} contentType={contentType} bodyText={bodyText} htmlPreview={pagePreviewHtml} loadWire={loadExchangeWire} />}
         {activeTab === 'timeline' && <TimelineView events={timeline.length ? timeline : exchange?.timeline ?? []} />}
         {activeTab === 'sequence' && <SequenceView events={pageSequence.length ? pageSequence : timeline.length ? timeline : exchange?.timeline ?? []} />}
       </section>
@@ -418,7 +445,7 @@ function RequestView({ exchange, loadWire }: { exchange?: WireExchange; loadWire
   </> : <p className="empty">Send a request to inspect the exact request bytes.</p>}</section></div>;
 }
 
-function ResponseView({ exchange, contentType, bodyText, loadWire }: { exchange?: WireExchange; contentType: string; bodyText: string; loadWire: (id: string) => Promise<WireExchange> }): JSX.Element {
+function ResponseView({ exchange, contentType, bodyText, htmlPreview, loadWire }: { exchange?: WireExchange; contentType: string; bodyText: string; htmlPreview?: string; loadWire: (id: string) => Promise<WireExchange> }): JSX.Element {
   const [loadedResponse, setLoadedResponse] = useState<WireResponse>();
   const [loading, setLoading] = useState(false);
   useEffect(() => { setLoadedResponse(undefined); setLoading(false); }, [exchange?.id]);
@@ -451,7 +478,7 @@ function ResponseView({ exchange, contentType, bodyText, loadWire }: { exchange?
     </> : <p className="empty">No response yet.</p>}</section>
     {response && <section className="panel body-panel"><div className="body-tabs">{['rendered', 'raw', 'hex', 'chunks'].map((tab) => <button className={bodyTab === tab ? 'active' : ''} key={tab} onClick={() => setBodyTab(tab)}>{tab}</button>)}</div>
       {response.largeBody && !loadedResponse && <div className="large-wire-note"><span>Large response wire is summarized to keep the renderer responsive.</span><button className="small-button" disabled={loading} onClick={() => void loadFullResponse()}>{loading ? 'Loading…' : 'Load full response wire'}</button></div>}
-      {bodyTab === 'rendered' && (image ? renderedImage ? <img className="image-preview" src={`data:${contentType};base64,${representation?.decodedBody.base64}`} /> : <p className="empty">This image is too large to render in the UI ({(representation?.decodedBody.length ?? 0).toLocaleString()} bytes).</p> : contentType.includes('text/html') ? <iframe className="render-frame" sandbox="" srcDoc={cachedResponse ? textPreview(representation?.decodedBody).text : bodyText} title="Sandboxed response preview" /> : <pre className="body-output">{contentType.includes('json') ? jsonBody(representation) : cachedResponse ? textPreview(representation?.decodedBody).text : bodyText}</pre>)}
+      {bodyTab === 'rendered' && (image ? renderedImage ? <img className="image-preview" src={`data:${contentType};base64,${representation?.decodedBody.base64}`} /> : <p className="empty">This image is too large to render in the UI ({(representation?.decodedBody.length ?? 0).toLocaleString()} bytes).</p> : contentType.includes('text/html') ? <iframe className="render-frame" sandbox="" srcDoc={cachedResponse ? textPreview(representation?.decodedBody).text : htmlPreview ?? bodyText} title="Sandboxed response preview" /> : <pre className="body-output">{contentType.includes('json') ? jsonBody(representation) : cachedResponse ? textPreview(representation?.decodedBody).text : bodyText}</pre>)}
       {bodyTab === 'raw' && <pre className="body-output">{visible(bodyPreview.text)}{bodyPreview.truncated ? '\n… raw body preview truncated' : ''}</pre>}
       {bodyTab === 'hex' && <pre className="body-output">{hexDump(decodePrefix(response.body), response.body.length)}</pre>}
       {bodyTab === 'chunks' && <div className="chunk-view"><div className="chunk-summary">{response.chunks.length} chunks · decoded total <strong>{response.chunks.reduce((sum, chunk) => sum + chunk.sizeDecimal, 0)} bytes</strong> · course example expects 10h + 6h = 22</div>{response.chunks.map((chunk, index) => <div className="chunk-row" key={index}><code>{chunk.sizeHex}</code><span>{chunk.sizeDecimal}</span><pre>{text(chunk.data)}</pre><small>{chunk.extension ?? ''}</small></div>)}{response.trailers.length > 0 && <div className="trailers">Trailers: {response.trailers.map((header) => `${header.name}: ${header.value}`).join(' · ')}</div>}</div>}
