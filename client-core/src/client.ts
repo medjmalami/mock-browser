@@ -243,16 +243,17 @@ export class HttpClient {
     let lastConnectionId: string | undefined;
     let lastReuseCount: number | undefined;
     const cachePolicy = requestCachePolicy(options.headers);
+    const shouldRevalidate = options.cacheMode === 'revalidate' || cachePolicy.revalidate;
     let staleEntry = options.cache === true && currentMethod === 'GET' && !cachePolicy.noStore ? this.cache.lookup(currentUrl) : undefined;
 
-    if (staleEntry?.state === 'fresh' && staleEntry.entry && !cachePolicy.revalidate) {
+    if (staleEntry?.state === 'fresh' && staleEntry.entry && !shouldRevalidate) {
       fromCache = true;
       emit('cache-hit', `Fresh cache entry served without network access for ${currentUrl}`, { remainingMs: staleEntry.remainingMs });
       lastRequest = this.buildRequest({ ...options, url: currentUrl, method: currentMethod, version, body: currentBody }, [] ).request;
       lastResponse = responseFromCache(staleEntry.entry);
       return { id: exchangeId, request: lastRequest, response: lastResponse, attempts, timeline, redirectChain, fromCache, cacheRevalidated, connectionId: lastConnectionId, connectionReuseCount: lastReuseCount };
     }
-    if (staleEntry?.entry && (staleEntry.state === 'stale' || cachePolicy.revalidate)) emit('cache-conditional', `${staleEntry.state === 'fresh' ? 'Cache revalidation requested' : 'Stale cache entry'}; conditional request will validate ${currentUrl}`, { etag: staleEntry.entry.etag, lastModified: staleEntry.entry.lastModified });
+    if (staleEntry?.entry && (staleEntry.state === 'stale' || shouldRevalidate)) emit('cache-conditional', `${staleEntry.state === 'fresh' ? 'Cache revalidation requested' : 'Stale cache entry'}; conditional request will validate ${currentUrl}`, { etag: staleEntry.entry.etag, lastModified: staleEntry.entry.lastModified });
 
     const maxRedirects = options.maxRedirects ?? 5;
     let redirectHops = 0;
@@ -262,7 +263,7 @@ export class HttpClient {
     while (true) {
       let extraHeaders: Header[] = [];
       if (referer) extraHeaders.push({ name: 'Referer', value: referer });
-      if (staleEntry?.entry && (staleEntry.state === 'stale' || cachePolicy.revalidate) && currentMethod === 'GET') extraHeaders = extraHeaders.concat(conditionalHeaders(staleEntry.entry));
+      if (staleEntry?.entry && (staleEntry.state === 'stale' || shouldRevalidate) && currentMethod === 'GET') extraHeaders = extraHeaders.concat(conditionalHeaders(staleEntry.entry));
       let response: ParsedResponse | undefined;
       let currentAttempt: ExchangeAttempt | undefined;
       for (let challenge = 0; challenge < 2; challenge += 1) {

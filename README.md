@@ -32,7 +32,7 @@ For an offline upload demonstration, use `POST http://127.0.0.1:8080/upload`, ch
 
 Large binary exchanges remain exact in the main-process wire capture, while the renderer transfers only bounded previews for automatic logs and raw/hex panels. Image responses are still rendered normally when they are within the renderer’s safe preview limit; a large image shows its byte count instead of freezing the window. Large request wires can be loaded explicitly from the Request panel when needed.
 
-The **Page + images** loader fetches the HTML and each uploaded image through the raw client. For the sandboxed HTML preview, the fetched image bytes are inlined as data URLs; the preview therefore does not create hidden renderer-side network requests, while the real image GET exchanges remain visible in Sequence.
+The **Page + images** loader fetches the HTML and each uploaded image through the raw client. With automatic revalidation enabled, each cache entry stores the representation body plus its `ETag` and `Last-Modified`; later requests add `If-None-Match` and `If-Modified-Since` automatically. Repeating the scenario therefore shows an independent `304 Not Modified` or `200 OK` for the page, `soleil.jpg`, and `lune.jpg`; replacing an image with PUT removes that image's cache entry so the next load returns fresh content for that URL. For the sandboxed HTML preview, the fetched image bytes are inlined as data URLs; the preview therefore does not create hidden renderer-side network requests, while the real image GET exchanges remain visible in Sequence.
 
 ## Design decisions and assumptions
 

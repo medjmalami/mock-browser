@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type JSX, type RefObject } from 'react';
 import { METHOD_REFERENCE, REQUEST_HEADER_REFERENCE, RESPONSE_HEADER_REFERENCE, STATUS_REFERENCE, statusMeaning } from './reference';
-import type { Header, HttpMethod, HttpVersion } from '@http-lab/client-core';
+import type { CacheMode, Header, HttpMethod, HttpVersion } from '@http-lab/client-core';
 
 type WireBuffer = { base64: string; length: number; truncated?: boolean };
 type WireChunk = { sizeHex: string; sizeDecimal: number; data: WireBuffer; extension?: string };
@@ -16,7 +16,7 @@ const METHODS = Object.keys(METHOD_REFERENCE) as HttpMethod[];
 const MAX_RENDERED_WIRE_BYTES = 64 * 1024;
 const MAX_RENDERED_LOG_CHARS = 12 * 1024;
 const scenarios: Scenario[] = [
-  { name: 'Page + images (HTTP/1.1)', description: 'Fetch the HTML page and /uploads/soleil.jpg plus /uploads/lune.jpg over a reusable connection.', options: { method: 'GET', url: 'http://127.0.0.1:8080/', version: 'HTTP/1.1', loadImages: true, autoRedirect: false, cache: false, cookies: false } },
+  { name: 'Page + images (HTTP/1.1)', description: 'Automatically validate the HTML page and each uploaded image independently over a reusable connection.', options: { method: 'GET', url: 'http://127.0.0.1:8080/', version: 'HTTP/1.1', loadImages: true, autoRedirect: false, cache: true, cacheMode: 'revalidate', cookies: false } },
   { name: 'Upload image (PUT)', description: 'Choose an image and store it at /uploads/soleil.jpg.', options: { method: 'PUT', url: 'http://127.0.0.1:8080/uploads/soleil.jpg', version: 'HTTP/1.1', bodyMode: 'binary', autoRedirect: false, cache: false, cookies: false } },
   { name: 'Delete image (authenticated)', description: 'Delete /uploads/soleil.jpg with the course Basic credentials.', options: { method: 'DELETE', url: 'http://127.0.0.1:8080/uploads/soleil.jpg', version: 'HTTP/1.1', auth: { username: 'mohamed', password: 'hkm4c' }, autoRedirect: false, cache: false, cookies: false } },
   { name: 'Conditional GET → 304', description: 'Enable cache, fetch twice, then inspect the conditional request.', options: { method: 'GET', url: 'http://127.0.0.1:8080/static/course.txt', version: 'HTTP/1.1', headers: [{ name: 'Cache-Control', value: 'no-cache' }], cache: true, cookies: false, autoRedirect: false } },
@@ -66,10 +66,15 @@ function headerValue(headers: Header[] | undefined, name: string): string | unde
   return headers?.find((header) => header.name.toLowerCase() === name.toLowerCase())?.value;
 }
 
+function cachedRepresentation(exchange?: WireExchange): WireResponse | undefined {
+  if (!exchange?.response) return undefined;
+  return exchange.response.statusCode === 304 ? exchange.cacheResponse ?? exchange.response : exchange.response;
+}
+
 function inlineFetchedImages(html: string, pageUrl: string, sources: string[], images: WireExchange[]): string {
   const previews = new Map<string, string>();
   sources.forEach((source, index) => {
-    const response = images[index]?.response;
+    const response = cachedRepresentation(images[index]);
     const contentType = headerValue(response?.headers, 'Content-Type') ?? '';
     const body = response?.decodedBody;
     if (!response || response.statusCode < 200 || response.statusCode >= 300 || !contentType.toLowerCase().startsWith('image/') || !body?.base64 || body.truncated) return;
@@ -195,6 +200,7 @@ export default function App(): JSX.Element {
   const [uploadPreviewUrl, setUploadPreviewUrl] = useState<string>();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [cache, setCache] = useState(false);
+  const [cacheMode, setCacheMode] = useState<CacheMode>('default');
   const [cookies, setCookies] = useState(false);
   const [redirects, setRedirects] = useState(false);
   const [proxy, setProxy] = useState(false);
@@ -283,6 +289,7 @@ export default function App(): JSX.Element {
     setBody(options.body ?? '');
     setBodyMode(options.bodyMode ?? (headerValue(options.headers, 'Content-Type')?.includes('json') ? 'json' : headerValue(options.headers, 'Content-Type')?.includes('form') ? 'form' : 'raw'));
     setCache(Boolean(options.cache));
+    setCacheMode(options.cacheMode ?? 'default');
     setCookies(Boolean(options.cookies));
     setRedirects(Boolean(options.autoRedirect));
     setProxy(Boolean(options.proxy));
@@ -308,15 +315,15 @@ export default function App(): JSX.Element {
       try { outgoingBody = JSON.stringify(JSON.parse(body)); } catch { outgoingBody = body; }
     }
     return {
-    cache, cookies, autoRedirect: redirects, maxRedirects: 5,
+    cache, cacheMode, cookies, autoRedirect: redirects, maxRedirects: 5,
     method, url, version, headers: outgoingHeaders, body: outgoingBody,
     proxy: proxy ? { host: proxyHost, port: Number(proxyPort) || 8888, enabled: true, credentials: proxyUsername && proxyPassword ? { username: proxyUsername, password: proxyPassword } : undefined } : undefined,
     auth: auth ? credentials : undefined,
     };
-  }, [method, url, version, headers, body, bodyMode, uploadFile, cache, cookies, redirects, proxy, proxyHost, proxyPort, proxyUsername, proxyPassword, auth, credentials]);
+  }, [method, url, version, headers, body, bodyMode, uploadFile, cache, cacheMode, cookies, redirects, proxy, proxyHost, proxyPort, proxyUsername, proxyPassword, auth, credentials]);
 
   const loadImageObjects = async (page: WireExchange, pageUrl: string, loadVersionValue: HttpVersion) => {
-    const html = text(page.response?.decodedBody);
+    const html = text(cachedRepresentation(page)?.decodedBody);
     const imageSources = [...html.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)].map((match) => match[1]);
     const images = await Promise.all(imageSources.map((source) => window.httpLab.request({ ...requestOptions, method: 'GET', version: loadVersionValue, url: new URL(source, pageUrl).toString(), body: undefined, autoRedirect: true }) as Promise<WireExchange>));
     return { images, previewHtml: inlineFetchedImages(html, pageUrl, imageSources, images), objects: imageSources.length + 1 };
@@ -390,7 +397,8 @@ export default function App(): JSX.Element {
   };
   const response = exchange?.response;
   const contentType = headerValue(response?.headers, 'Content-Type') ?? '';
-  const bodyText = response && (/^text\//i.test(contentType) || /json|javascript|xml/i.test(contentType)) ? textPreview(response.decodedBody).text : '';
+  const bodyRepresentation = cachedRepresentation(exchange);
+  const bodyText = bodyRepresentation && (/^text\//i.test(contentType) || /json|javascript|xml/i.test(contentType)) ? textPreview(bodyRepresentation.decodedBody).text : '';
   const matchesReference = (value: string) => value.toLowerCase().includes(referenceQuery.trim().toLowerCase());
 
   return <main className="app-shell">
@@ -490,7 +498,7 @@ function ResponseView({ exchange, contentType, bodyText, htmlPreview, loadWire }
     </> : <p className="empty">No response yet.</p>}</section>
     {response && <section className="panel body-panel"><div className="body-tabs">{['rendered', 'raw', 'hex', 'chunks'].map((tab) => <button className={bodyTab === tab ? 'active' : ''} key={tab} onClick={() => setBodyTab(tab)}>{tab}</button>)}</div>
       {response.largeBody && !loadedResponse && <div className="large-wire-note"><span>Large response wire is summarized to keep the renderer responsive.</span><button className="small-button" disabled={loading} onClick={() => void loadFullResponse()}>{loading ? 'Loading…' : 'Load full response wire'}</button></div>}
-      {bodyTab === 'rendered' && (image ? renderedImage ? <img className="image-preview" src={`data:${contentType};base64,${representation?.decodedBody.base64}`} /> : <p className="empty">This image is too large to render in the UI ({(representation?.decodedBody.length ?? 0).toLocaleString()} bytes).</p> : contentType.includes('text/html') ? <iframe className="render-frame" sandbox="" srcDoc={cachedResponse ? textPreview(representation?.decodedBody).text : htmlPreview ?? bodyText} title="Sandboxed response preview" /> : <pre className="body-output">{contentType.includes('json') ? jsonBody(representation) : cachedResponse ? textPreview(representation?.decodedBody).text : bodyText}</pre>)}
+      {bodyTab === 'rendered' && (image ? renderedImage ? <img className="image-preview" src={`data:${contentType};base64,${representation?.decodedBody.base64}`} /> : <p className="empty">This image is too large to render in the UI ({(representation?.decodedBody.length ?? 0).toLocaleString()} bytes).</p> : contentType.includes('text/html') ? <iframe className="render-frame" sandbox="" srcDoc={htmlPreview ?? textPreview(representation?.decodedBody).text} title="Sandboxed response preview" /> : <pre className="body-output">{contentType.includes('json') ? jsonBody(representation) : bodyText}</pre>)}
       {bodyTab === 'raw' && <pre className="body-output">{visible(bodyPreview.text)}{bodyPreview.truncated ? '\n… raw body preview truncated' : ''}</pre>}
       {bodyTab === 'hex' && <pre className="body-output">{hexDump(decodePrefix(response.body), response.body.length)}</pre>}
       {bodyTab === 'chunks' && <div className="chunk-view"><div className="chunk-summary">{response.chunks.length} chunks · decoded total <strong>{response.chunks.reduce((sum, chunk) => sum + chunk.sizeDecimal, 0)} bytes</strong> · course example expects 10h + 6h = 22</div>{response.chunks.map((chunk, index) => <div className="chunk-row" key={index}><code>{chunk.sizeHex}</code><span>{chunk.sizeDecimal}</span><pre>{text(chunk.data)}</pre><small>{chunk.extension ?? ''}</small></div>)}{response.trailers.length > 0 && <div className="trailers">Trailers: {response.trailers.map((header) => `${header.name}: ${header.value}`).join(' · ')}</div>}</div>}
