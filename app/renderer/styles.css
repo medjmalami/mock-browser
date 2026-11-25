@@ -1,5 +1,25 @@
 :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #080d18; color: #e6edf7; font-size: 13px; }
 * { box-sizing: border-box; }
+/* Keep theme styling outside the sandboxed response preview. */
+:root[data-theme="light"] { color-scheme: light; background: #f4f7fb; color: #172b45; }
+:root[data-theme="light"] body { background: radial-gradient(circle at 30% 0%, #e2edfa 0, #f4f7fb 43rem); }
+:root[data-theme="light"] .app-shell :is(.panel, .scenario-popover) { background: #ffffff; border-color: #c4d1e1; box-shadow: 0 8px 28px #243b5310; }
+:root[data-theme="light"] .app-shell :is(input, select, textarea, button, .binary-picker, .selected-file, .comparison-grid > div, .wire, .body-output, .tunnel-layout pre) { background: #f4f7fb; color: #172b45; border-color: #bdccde; }
+:root[data-theme="light"] .app-shell button:hover { background: #e2edfa; border-color: #2475aa; }
+:root[data-theme="light"] .app-shell .primary { background: #086a9e; border-color: #086a9e; color: white; }
+:root[data-theme="light"] .app-shell :is(small, .muted, .empty, .service-state, .method-note, .scenario-option span, .table-head, .body-toolbar, .file-meta span, .toggles, .tabs button, .body-tabs button, .status-explanation, .section-label, .trailers, .compression-note, .timeline-time, .timeline-row code, .logs pre, .reference-row, .comparison-grid small) { color: #52657e; }
+:root[data-theme="light"] .app-shell :is(.panel-title, .header-editor-heading, .file-meta strong, .comparison-grid span, .status-line span:nth-child(3), .response-header span, .chunk-summary, .timeline-row p, .sequence-arrow, .dns-table) { color: #263e5b; }
+:root[data-theme="light"] .app-shell :is(.brand-mark, .request-bar select:first-child, .connection-card code, .cookie-card code, .cache-card code, .comparison-grid strong, .token-version, .status-line span:first-child, .response-header code, .timeline-row strong, .sequence-head, .reference h3) { color: #086899; }
+:root[data-theme="light"] .app-shell :is(.method-pill, .tabs button.active, .body-tabs button.active) { background: #deedfa; color: #075c8a; }
+:root[data-theme="light"] .app-shell :is(.token-url, .status-line strong, .chunk-row code, .sequence-label, .reference-row code, .blank-marker, .credential-row code) { color: #835500; }
+:root[data-theme="light"] .app-shell .token-method { color: #08734f; }
+:root[data-theme="light"] .app-shell .error-banner { background: #ffebee; color: #a12536; border-color: #cc7c88; }
+:root[data-theme="light"] .app-shell .large-wire-note { background: #fff5d9; color: #76510b; border-color: #d6b973; }
+:root[data-theme="light"] .app-shell :is(.status-1xx, .status-2xx) { background: #dcefe9; color: #156448; }
+:root[data-theme="light"] .app-shell .status-3xx { background: #fff0c5; color: #795300; }
+:root[data-theme="light"] .app-shell :is(.status-4xx, .status-5xx) { background: #ffe1e4; color: #a12536; }
+:root[data-theme="light"] .app-shell :is(.connection-card, .cookie-card, .cache-card, .tabs, .body-tabs, .headers-table, .response-header, .chunk-row, .timeline-row, .sequence-head, .sequence-row, .reference-row, .upload-preview) { border-color: #cbd7e5; }
+:root[data-theme="light"] .app-shell .icon-button { background: transparent; color: #52657e; }
 body { margin: 0; min-width: 1100px; background: radial-gradient(circle at 30% 0%, #14233d 0, #080d18 43rem); }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
