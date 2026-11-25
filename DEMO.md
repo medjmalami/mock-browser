@@ -14,3 +14,11 @@
 12. Choose **Upload image (PUT)**, select an image, and inspect the generated `Content-Type` and `Content-Length`. Request the same URL with `GET` to verify that the stored response returns the exact image bytes. Repeating the PUT demonstrates replacement at the same URL.
 13. Choose **Delete image (authenticated)** and send it. The authenticated `DELETE` returns `204`; requesting the same URL afterward returns `404`.
 14. Use the DNS panel for `localhost` while offline; then try a public name to demonstrate the clear no-record/offline message.
+
+15. Choose **301 redirect** and send. The **Exchange step** selector starts on `GET /old → 301`: inspect `Location` in the response headers and the CRLF-delimited raw response. Select step 2 to inspect the followed GET and its response. The same selector exposes authentication challenge/retry pairs.
+16. Choose **Form POST + Referer** and send to load `GET /login`. In **Response → rendered**, edit the username/password and click **Submit**. Inspect the POST request body and `Referer: http://127.0.0.1:8080/login`, then the `201`, `Location`, and `Set-Cookie` response. The real HTML form runs in the embedded page and submits through the raw client. Select its POST under Page requests to inspect the exchange.
+
+17. Choose **JavaScript + CSS**, then click **Send**. Inside **Response → rendered**, the page loads `/live-demo.css` and `/live-demo.js`. Click the counter, then submit the form. Select each **Page requests** row to inspect CSS/JS GETs, the POST body and Referer, and the response cookie. Click Continue in the embedded page to inspect the cookie-bearing private-page request.
+18. Enter `https://www.wikipedia.org/` and click **Send**. The rendered panel displays the globe image and runs page scripts/styles. Resource requests appear alongside the response. Use **snapshot** for a static, script-disabled view.
+
+The document is rendered from captured bytes, without repeating its request. Later page requests use direct raw HTTP/HTTPS, an isolated browser cookie session, and automatic redirects. Workers, WebSockets, downloads, and popups are disabled; not every public web application is supported. Switching away from rendered closes the page; returning starts from the captured response again.

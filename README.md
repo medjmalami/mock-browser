@@ -36,6 +36,18 @@ Large binary exchanges remain exact in the main-process wire capture, while the 
 
 The **Page + images** loader fetches the HTML and each uploaded image through the raw client. With automatic revalidation enabled, each cache entry stores the representation body plus its `ETag` and `Last-Modified`; later requests add `If-None-Match` and `If-Modified-Since` automatically. Repeating the scenario therefore shows an independent `304 Not Modified` or `200 OK` for the page, `soleil.jpg`, and `lune.jpg`; replacing an image with PUT removes that image's cache entry so the next load returns fresh content for that URL. For the sandboxed HTML preview, the fetched image bytes are inlined as data URLs; the preview therefore does not create hidden renderer-side network requests, while the real image GET exchanges remain visible in Sequence.
 
+## Rendered responses: JavaScript, CSS, and images
+
+Enter an HTTP/HTTPS URL and click **Send**. HTML runs directly inside **Response → rendered**, including stylesheets, images, scripts, and interactive forms. Try `https://www.wikipedia.org/`, or choose **JavaScript + CSS** for an offline demo with a working button and login form. There is no separate browser window or live-page button.
+
+The embedded browser starts from the exact captured response body; it does not repeat the document request or resubmit a POST. Its subsequent resource requests, form submissions, and navigation go through the raw client. Select a row under **Page requests** to inspect its headers and bytes without replaying it. Redirects during page navigation appear as separate requests, including their `Location` headers.
+
+Use **snapshot** for a static script-disabled HTML view. The **Load page** connection-comparison lesson starts on this snapshot to avoid extra requests changing its measurements. Switching away from rendered closes the active page; returning renders the original captured response again. The latest 20 HTML exchanges are retained for embedded previews; older previews ask you to send again.
+
+The initial request uses the editor settings. Subsequent embedded-page requests use the selected exchange's HTTP version, direct raw connections, automatic browser redirects, and an isolated in-memory browser cookie session. They do not inherit custom request-editor headers/body, proxy/auth helpers, or the lab cache/cookie toggles. Cookies from embedded forms are visible in captured `Set-Cookie`/`Cookie` headers; they do not populate the separate lab cookie jar. Reopening a preview starts a fresh browser session. The request list retains the latest 100 page exchanges.
+
+Workers/service workers, WebSockets, plugins, downloads, and popups are disabled. HTTP/HTTPS resources use the lab's HTTP/1.x transport, including TLS for HTTPS; site CSP and browser origin protections remain enabled. Ordinary client-rendered JavaScript/React pages can execute, but applications depending on unsupported features may not work.
+
 ## Design decisions and assumptions
 
 - Networking is owned by Electron's main process or the standalone server. The renderer has `contextIsolation: true`, `nodeIntegration: false`, and a sandboxed preload bridge.
@@ -51,7 +63,7 @@ The **Page + images** loader fetches the HTML and each uploaded image through th
 
 ## Security boundaries
 
-The renderer cannot access Node or create sockets. Response HTML is rendered only inside an iframe with `sandbox` and no scripts. Server/proxy sockets bind to loopback. Proxy credentials are consumed by the proxy and are never forwarded to the origin. The UI is intended for local teaching scenarios, not arbitrary browsing.
+The renderer cannot access Node or create sockets. Static response HTML stays inside an iframe with `sandbox` and no scripts. The rendered panel embeds a separate WebContentsView that runs page JavaScript in its own sandboxed session with no preload, Node integration, or lab IPC bridge. Its HTTP/HTTPS protocol handlers delegate to the raw client in the main process; permissions and popups are denied. Server/proxy sockets bind to loopback. Proxy credentials are consumed by the proxy and are never forwarded to the origin. The UI is intended for protocol teaching, not as a general-purpose browser.
 
 ## Tests and curl
 
@@ -68,4 +80,13 @@ curl -v http://127.0.0.1:8080/uploads/soleil.jpg --output downloaded-soleil.jpg
 curl -v -X DELETE -u mohamed:hkm4c http://127.0.0.1:8080/uploads/soleil.jpg
 curl -v -I http://127.0.0.1:8080/
 curl -v -X TRACE http://127.0.0.1:8080/
+```
+
+Optional UI checks (after `npm run build:main`):
+
+```bash
+HTTP_LAB_BROWSER_TESTS=1 node app/test/renderer.test.cjs  # requires Chrome
+electron app/test/live-page-smoke.cjs                   # requires Electron/display
+electron app/test/full-app-smoke.cjs                     # Send -> embedded rendering + form test
+HTTP_LAB_TEST_WIKIPEDIA=1 electron app/test/live-page-smoke.cjs # also checks the public site
 ```

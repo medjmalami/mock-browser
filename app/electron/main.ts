@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'node:path';
+import { LivePage, type PreviewBounds } from './live-page';
 import { HttpClient, resolveRecords, type Exchange, type RequestOptions, type SerializedRequest, type TunnelSession } from '@http-lab/client-core';
 import { startLabServices, type LabServices } from '@http-lab/server';
 
@@ -90,14 +91,21 @@ function compactPayload(payload: unknown): unknown {
 let windowRef: BrowserWindow | undefined;
 let services: LabServices | undefined;
 let client: HttpClient;
+let livePage: LivePage;
 const tunnels = new Map<string, TunnelSession>();
 const eventHistory: unknown[] = [];
+const previewExchangeStore = new Map<string, Exchange>();
 const largeExchangeStore = new Map<string, Exchange>();
 
 function rememberExchange(exchange: Exchange): void {
+  if ([exchange.response, exchange.cacheResponse, ...exchange.attempts.map(attempt => attempt.response)].some(response => response?.headers.some(header => header.name.toLowerCase() === 'content-type' && header.value.includes('text/html')))) {
+    previewExchangeStore.set(exchange.id, exchange);
+    if (previewExchangeStore.size > 20) previewExchangeStore.delete(previewExchangeStore.keys().next().value!);
+  }
   const response = exchange.response;
   const responseIsLarge = response && Math.max(response.raw.length, response.body.length, response.compressedBody.length, response.decodedBody.length) > MAX_RENDERER_WIRE_BYTES;
-  if (exchange.request.bytes.length <= MAX_RENDERER_WIRE_BYTES && !responseIsLarge) return;
+  const attemptIsLarge = exchange.attempts.some(({ request, response }) => request.bytes.length > MAX_RENDERER_WIRE_BYTES || (response && Math.max(response.raw.length, response.body.length, response.compressedBody.length, response.decodedBody.length) > MAX_RENDERER_WIRE_BYTES));
+  if (exchange.request.bytes.length <= MAX_RENDERER_WIRE_BYTES && !responseIsLarge && !attemptIsLarge) return;
   largeExchangeStore.set(exchange.id, exchange);
   while (largeExchangeStore.size > MAX_STORED_LARGE_EXCHANGES) {
     const oldest = largeExchangeStore.keys().next().value as string | undefined;
@@ -110,7 +118,7 @@ function broadcast(channel: string, payload: unknown): void {
   const safePayload = compactPayload(payload);
   eventHistory.push({ channel, payload: safePayload });
   if (eventHistory.length > 500) eventHistory.shift();
-  windowRef?.webContents.send(channel, safePayload);
+  if (windowRef && !windowRef.isDestroyed()) windowRef.webContents.send(channel, safePayload);
 }
 
 function createWindow(): BrowserWindow {
@@ -134,6 +142,35 @@ function createWindow(): BrowserWindow {
 }
 
 async function registerIpc(): Promise<void> {
+  const requireLabWindow = (event: Electron.IpcMainInvokeEvent) => {
+    if (!windowRef || event.sender !== windowRef.webContents || event.senderFrame !== windowRef.webContents.mainFrame) throw new Error('Only the lab UI can control the preview');
+    return windowRef;
+  };
+  ipcMain.handle('lab:live-page:open', async (event, value: { exchangeId: string; attemptIndex: number; token: string; bounds: PreviewBounds }) => {
+    const parent = requireLabWindow(event);
+    const exchange = previewExchangeStore.get(value.exchangeId);
+    if (!exchange) throw new Error('This HTML preview has expired. Send the request again.');
+    const attempt = exchange.attempts[value.attemptIndex];
+    const request = attempt?.request ?? exchange.request;
+    const response = attempt?.response ?? exchange.response;
+    const representation = response?.statusCode === 304 ? exchange.cacheResponse ?? response : response;
+    if (!representation) throw new Error('No response body to preview');
+    const [, target, version] = request.requestLine.split(' ');
+    const host = request.headers.find(header => header.name.toLowerCase() === 'host')?.value;
+    const pageUrl = exchange.redirectChain.find(value => {
+      const candidate = new URL(value);
+      return candidate.host === host && `${candidate.pathname}${candidate.search}` === target;
+    }) ?? new URL(target, exchange.redirectChain.at(-1)).toString();
+    await livePage.open(pageUrl, version === 'HTTP/1.0' ? 'HTTP/1.0' : 'HTTP/1.1', parent, value.bounds, value.token, representation);
+  });
+  ipcMain.handle('lab:live-page:bounds', (event, value: { token: string; bounds: PreviewBounds }) => {
+    requireLabWindow(event);
+    livePage.setBounds(value.token, value.bounds);
+  });
+  ipcMain.handle('lab:live-page:close', (event, token: string) => {
+    requireLabWindow(event);
+    livePage.close(token);
+  });
   ipcMain.handle('lab:request', async (_event, options: RequestOptions) => {
     const exchange = await client.request(options);
     rememberExchange(exchange);
@@ -181,6 +218,7 @@ async function registerIpc(): Promise<void> {
   ipcMain.handle('lab:cookie:edit', async (_event, value: { name: string; value: string; domain?: string; path?: string }) => client.cookies.edit(value.name, value.value, value.domain, value.path ?? '/'));
   ipcMain.handle('lab:cache:clear', async () => client.cache.clear());
   ipcMain.handle('lab:stop', async () => {
+    livePage.close();
     client.closeAll();
     for (const tunnel of tunnels.values()) tunnel.close();
     tunnels.clear();
@@ -191,6 +229,10 @@ async function registerIpc(): Promise<void> {
 async function boot(): Promise<void> {
   await app.whenReady();
   client = new HttpClient({ onEvent: (event) => broadcast('lab:event', event) });
+  livePage = new LivePage(client, exchange => {
+    rememberExchange(exchange);
+    if (windowRef && !windowRef.isDestroyed()) windowRef.webContents.send('lab:live-exchange', serializableExchange(exchange));
+  }, message => { if (windowRef && !windowRef.isDestroyed()) windowRef.webContents.send('lab:live-error', message); });
   services = await startLabServices({
     origin: { port: Number(process.env.HTTP_LAB_ORIGIN_PORT ?? 8080) },
     proxy: {
@@ -207,6 +249,7 @@ async function boot(): Promise<void> {
   });
   await registerIpc();
   windowRef = createWindow();
+  windowRef.on('closed', () => livePage.close());
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) windowRef = createWindow();
   });

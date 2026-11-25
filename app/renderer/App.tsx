@@ -16,6 +16,7 @@ const METHODS = Object.keys(METHOD_REFERENCE) as HttpMethod[];
 const MAX_RENDERED_WIRE_BYTES = 64 * 1024;
 const MAX_RENDERED_LOG_CHARS = 12 * 1024;
 const scenarios: Scenario[] = [
+  { name: 'JavaScript + CSS', description: 'Send and use Response → rendered to run JavaScript, load CSS, and submit a real form.', options: { method: 'GET', url: 'http://127.0.0.1:8080/live-demo', version: 'HTTP/1.1', cache: false, cookies: true } },
   { name: 'Page + images (HTTP/1.1)', description: 'Automatically validate the HTML page and each uploaded image independently over a reusable connection.', options: { method: 'GET', url: 'http://127.0.0.1:8080/', version: 'HTTP/1.1', loadImages: true, autoRedirect: false, cache: true, cacheMode: 'revalidate', cookies: false } },
   { name: 'Upload image (PUT)', description: 'Choose an image and store it at /uploads/soleil.jpg.', options: { method: 'PUT', url: 'http://127.0.0.1:8080/uploads/soleil.jpg', version: 'HTTP/1.1', bodyMode: 'binary', autoRedirect: false, cache: false, cookies: false } },
   { name: 'Delete image (authenticated)', description: 'Delete /uploads/soleil.jpg with the course Basic credentials.', options: { method: 'DELETE', url: 'http://127.0.0.1:8080/uploads/soleil.jpg', version: 'HTTP/1.1', auth: { username: 'mohamed', password: 'hkm4c' }, autoRedirect: false, cache: false, cookies: false } },
@@ -23,10 +24,10 @@ const scenarios: Scenario[] = [
   { name: 'ETag → 304', description: 'Exercise If-None-Match with the static resource.', options: { method: 'GET', url: 'http://127.0.0.1:8080/static/etag.txt', version: 'HTTP/1.1', headers: [{ name: 'Cache-Control', value: 'no-cache' }], cache: true, cookies: false, autoRedirect: false } },
   { name: 'Basic auth 401 → 200', description: 'Challenge and retry against /protected/.', options: { method: 'GET', url: 'http://127.0.0.1:8080/protected/', version: 'HTTP/1.1', auth: { username: 'mohamed', password: 'hkm4c' }, autoRedirect: false, cache: false, cookies: false } },
   { name: 'Proxy 407 → 200', description: 'Use the local proxy with its optional course credentials.', options: { method: 'GET', url: 'http://127.0.0.1:8080/', version: 'HTTP/1.1', proxy: { host: '127.0.0.1', port: 8888, enabled: true, credentials: { username: 'proxy', password: 'proxy' } }, autoRedirect: false, cache: false, cookies: false } },
-  { name: '301 redirect', description: 'Follow /old and show Referer on the next request.', options: { method: 'GET', url: 'http://127.0.0.1:8080/old', version: 'HTTP/1.1', autoRedirect: true, cache: false, cookies: false } },
+  { name: '301 redirect', description: 'Inspect the 301 Location header, then select the followed request and response.', options: { method: 'GET', url: 'http://127.0.0.1:8080/old', version: 'HTTP/1.1', autoRedirect: true, cache: false, cookies: false } },
   { name: 'Cookie login', description: 'POST the course form, then request the private page with Cookie.', options: { method: 'POST', url: 'http://127.0.0.1:8080/login.cgi', version: 'HTTP/1.1', headers: [{ name: 'Content-Type', value: 'application/x-www-form-urlencoded' }], body: 'username=mohamed&password=hkm4c', autoRedirect: false, cache: false, cookies: true } },
   { name: 'Chunked response', description: 'Display every chunk and the 22-byte course total.', options: { method: 'GET', url: 'http://127.0.0.1:8080/chunked', version: 'HTTP/1.1', autoRedirect: false, cache: false, cookies: false } },
-  { name: 'Form POST + Referer', description: 'Send a form body with the course Referer header.', options: { method: 'POST', url: 'http://127.0.0.1:8080/login.cgi', version: 'HTTP/1.1', headers: [{ name: 'Content-Type', value: 'application/x-www-form-urlencoded' }, { name: 'Referer', value: 'http://127.0.0.1:8080/' }], body: 'username=mohamed&password=hkm4c', autoRedirect: false, cache: false, cookies: true } },
+  { name: 'Form POST + Referer', description: 'GET the login page, fill its form, then submit and inspect POST + Referer.', options: { method: 'GET', url: 'http://127.0.0.1:8080/login', version: 'HTTP/1.1', autoRedirect: false, cache: false, cookies: true } },
   { name: 'Keep-alive vs close', description: 'Toggle the Connection header and compare the connection timeline.', options: { method: 'GET', url: 'http://127.0.0.1:8080/', version: 'HTTP/1.1', headers: [{ name: 'Connection', value: 'close' }], autoRedirect: false, cache: false, cookies: false } },
   { name: 'Range → 206', description: 'Request a byte range from a static file.', options: { method: 'GET', url: 'http://127.0.0.1:8080/static/course.txt', version: 'HTTP/1.1', headers: [{ name: 'Range', value: 'bytes=0-9' }], autoRedirect: false, cache: false, cookies: false } },
   { name: 'TRACE echo', description: 'Ask the server to return the exact request it received.', options: { method: 'TRACE', url: 'http://127.0.0.1:8080/', version: 'HTTP/1.1', autoRedirect: false, cache: false, cookies: false } },
@@ -221,6 +222,8 @@ export default function App(): JSX.Element {
   const [credentials, setCredentials] = useState({ username: 'mohamed', password: 'hkm4c' });
   const [activeTab, setActiveTab] = useState('response');
   const [exchange, setExchange] = useState<WireExchange | undefined>();
+  const [attemptSelection, setAttemptSelection] = useState<{ id: string; index: number }>();
+  const [liveExchanges, setLiveExchanges] = useState<WireExchange[]>([]);
   const [history, setHistory] = useState<WireExchange[]>([]);
   const [timeline, setTimeline] = useState<any[]>([]);
   const [serverLogs, setServerLogs] = useState<any[]>([]);
@@ -239,6 +242,11 @@ export default function App(): JSX.Element {
   const [loadImages, setLoadImages] = useState(false);
 
   useEffect(() => {
+    const unsubscribeLive = window.httpLab.subscribe('lab:live-exchange', (value: any) => {
+      setLiveExchanges(items => [...items.slice(-99), value]);
+      void refreshState();
+    });
+    const unsubscribeLiveError = window.httpLab.subscribe('lab:live-error', (message: any) => setError(String(message)));
     const unsubscribeEvent = window.httpLab.subscribe('lab:event', (event: any) => setTimeline((items) => [...items.slice(-199), event]));
     const unsubscribeLog = window.httpLab.subscribe('lab:server-log', (log: any) => setServerLogs((items) => [...items.slice(-199), log]));
     const unsubscribeTunnel = window.httpLab.subscribe('lab:tunnel-data', (payload: any) => {
@@ -247,7 +255,7 @@ export default function App(): JSX.Element {
       setTunnelOutput((value) => `${value}${new TextDecoder('latin1').decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)))}`);
     });
     void refreshState();
-    return () => { unsubscribeEvent(); unsubscribeLog(); unsubscribeTunnel(); };
+    return () => { unsubscribeLive(); unsubscribeLiveError(); unsubscribeEvent(); unsubscribeLog(); unsubscribeTunnel(); };
   }, [tunnel?.id]);
 
   useEffect(() => {
@@ -287,6 +295,7 @@ export default function App(): JSX.Element {
   };
   const selectScenario = (scenario: Scenario) => {
     const options = scenario.options;
+    setActiveTab('response');
     setMethod(options.method);
     setUrl(options.url);
     setVersion(options.version);
@@ -339,7 +348,7 @@ export default function App(): JSX.Element {
   };
 
   const send = async () => {
-    setBusy(true); setError(''); setTimeline([]); setPageSequence([]); setPagePreviewHtml(undefined);
+    setBusy(true); setError(''); setTimeline([]); setPageSequence([]); setPagePreviewHtml(undefined); setLiveExchanges([]);
     try {
       if (method === 'CONNECT') {
         const opened = await window.httpLab.openTunnel(requestOptions);
@@ -360,7 +369,7 @@ export default function App(): JSX.Element {
   };
 
   const loadPage = async () => {
-    setBusy(true); setError(''); setTimeline([]); setPageSequence([]); setPagePreviewHtml(undefined);
+    setBusy(true); setError(''); setTimeline([]); setPageSequence([]); setPagePreviewHtml(undefined); setLiveExchanges([]);
     try {
       const before = await window.httpLab.state() as any;
       const loadVersion = async (loadVersionValue: HttpVersion) => {
@@ -385,13 +394,23 @@ export default function App(): JSX.Element {
     finally { setBusy(false); }
   };
 
+  const inspectLiveExchange = (item: WireExchange) => {
+    setExchange(item); setAttemptSelection(undefined); setPagePreviewHtml(undefined); setPageComparison(undefined); setActiveTab('response');
+  };
   const lookupDns = async () => { setDnsRecords(await window.httpLab.dns(dnsName) as any[]); };
-  const loadRequestWire = async (id: string) => await window.httpLab.requestWire(id) as WireRequest;
-  const loadExchangeWire = async (id: string) => await window.httpLab.exchangeWire(id) as WireExchange;
+  // Keep the selected request and response paired, including full-wire loading.
+  const attemptIndex = attemptSelection?.id === exchange?.id ? attemptSelection?.index ?? 0 : 0;
+  const selectAttempt = (value: WireExchange): WireExchange => {
+    const attempt = value.attempts[attemptIndex];
+    return attempt ? { ...value, ...attempt, response: attempt.response, error: attempt.error, cacheResponse: attemptIndex === value.attempts.length - 1 ? value.cacheResponse : undefined } : value;
+  };
+  const selectedExchange = exchange ? selectAttempt(exchange) : undefined;
+  const loadExchangeWire = async (id: string) => selectAttempt(await window.httpLab.exchangeWire(id) as WireExchange);
+  const loadRequestWire = async (id: string) => (await loadExchangeWire(id)).request;
   const replay = async (item: WireExchange) => {
     setBusy(true);
     try {
-      const request = item.request.largeBody ? await loadRequestWire(item.id) : item.request;
+      const request = item.request.largeBody ? await window.httpLab.requestWire(item.id) as WireRequest : item.request;
       const [replayMethod, replayTarget, replayVersion] = request.requestLine.split(' ');
       const replayHost = headerValue(request.headers, 'Host') ?? '127.0.0.1:8080';
       const replayUrl = replayTarget.startsWith('http://') || replayTarget.startsWith('https://') ? replayTarget : `http://${replayHost}${replayTarget}`;
@@ -404,9 +423,9 @@ export default function App(): JSX.Element {
     } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
     finally { setBusy(false); }
   };
-  const response = exchange?.response;
+  const response = selectedExchange?.response;
   const contentType = headerValue(response?.headers, 'Content-Type') ?? '';
-  const bodyRepresentation = cachedRepresentation(exchange);
+  const bodyRepresentation = cachedRepresentation(selectedExchange);
   const bodyText = bodyRepresentation && (/^text\//i.test(contentType) || /json|javascript|xml/i.test(contentType)) ? textPreview(bodyRepresentation.decodedBody).text : '';
   const matchesReference = (value: string) => value.toLowerCase().includes(referenceQuery.trim().toLowerCase());
 
@@ -431,12 +450,14 @@ export default function App(): JSX.Element {
         {error && <div className="error-banner">{error}</div>}
         {pageComparison && <section className="panel comparison-panel"><div className="panel-title">Load page · connection comparison</div><div className="comparison-grid"><div><strong>HTTP/1.0</strong><span>{pageComparison.http10.objects} objects · {pageComparison.http10.tcpConnections} TCP connections</span><small>new connection per object</small></div><div><strong>HTTP/1.1</strong><span>{pageComparison.http11.objects} objects · {pageComparison.http11.tcpConnections} TCP connections</span><small>persistent connection reuse</small></div></div></section>}
         {tunnel && <section className="panel tunnel-panel"><div className="panel-title"><span>CONNECT tunnel</span><span className="muted">{tunnel.connectionId} · {tunnel.statusCode} {tunnel.reason}</span></div><div className="tunnel-layout"><div><textarea value={tunnelInput} onChange={(event) => setTunnelInput(event.target.value)} /><button className="primary" onClick={() => void window.httpLab.sendTunnel(tunnel.id, tunnelInput)}>send bytes</button><button className="secondary" onClick={() => void window.httpLab.closeTunnel(tunnel.id).then(() => setTunnel(undefined))}>close</button></div><pre>{tunnelOutput || 'Echoed bytes will appear here…'}</pre></div></section>}
-        {activeTab === 'request' && <RequestView exchange={exchange} loadWire={loadRequestWire} />}
-        {activeTab === 'response' && <ResponseView exchange={exchange} contentType={contentType} bodyText={bodyText} htmlPreview={pagePreviewHtml} loadWire={loadExchangeWire} />}
+        {exchange && exchange.attempts.length > 1 && <section className="panel"><label>Exchange step <select aria-label="Exchange step" value={attemptIndex} onChange={(event) => setAttemptSelection({ id: exchange.id, index: Number(event.target.value) })}>{exchange.attempts.map((attempt, index) => <option key={index} value={index}>{index + 1}. {attempt.request.requestLine} → {attempt.response?.statusCode ?? 'error'}</option>)}</select></label><p className="muted">Select a step to inspect its request, response headers, body, and raw wire.</p></section>}
+        {activeTab === 'request' && <RequestView key={`${exchange?.id}-${attemptIndex}`} exchange={selectedExchange} loadWire={loadRequestWire} />}
+        {activeTab === 'response' && <ResponseView key={`${exchange?.id}-${attemptIndex}`} exchange={selectedExchange} contentType={contentType} bodyText={bodyText} htmlPreview={attemptIndex === (exchange?.attempts.length ?? 1) - 1 ? pagePreviewHtml : undefined} loadWire={loadExchangeWire} attemptIndex={attemptIndex} />}
         {activeTab === 'timeline' && <TimelineView events={timeline.length ? timeline : exchange?.timeline ?? []} />}
         {activeTab === 'sequence' && <SequenceView events={pageSequence.length ? pageSequence : timeline.length ? timeline : exchange?.timeline ?? []} />}
       </section>
       <aside className="right-column">
+        {liveExchanges.length > 0 && <section className="panel live-requests"><div className="panel-title">Page requests</div><p className="muted">Select a request to inspect its captured headers and raw bytes. Latest 100 requests; live browsing uses its own browser cookies and follows redirects.</p>{liveExchanges.map(item => <button className="history-row" key={item.id} onClick={() => inspectLiveExchange(item)}><span>{item.response?.statusCode ?? 'error'} · {item.request.requestLine}</span><small>{item.redirectChain[0]}</small></button>)}</section>}
         <section className="panel side-panel"><div className="panel-title">Cache <button className="small-button" onClick={() => void window.httpLab.clearCache().then(refreshState)}>clear</button></div>{state.cache?.length ? state.cache.map((entry: any) => <div className="cache-card" key={entry.key}><code>{entry.url}</code><small>{entry.etag ?? 'no ETag'} · {entry.fresh ? `${Math.max(0, Math.round((entry.remainingMs ?? 0) / 1000))}s fresh` : 'stale'}</small></div>) : <p className="empty">Cache is empty.</p>}</section>
         <section className="panel side-panel"><div className="panel-title">History</div>{history.map((item) => <button className="history-row" key={item.id} onClick={() => void replay(item)}><span>{item.request.requestLine}</span><small>{item.response?.statusCode ?? 'error'} · click to replay</small></button>)}</section>
         <section className="panel side-panel"><div className="panel-title">DNS</div><div className="dns-form"><input value={dnsName} onChange={(event) => setDnsName(event.target.value)} /><button className="small-button" onClick={() => void lookupDns()}>lookup</button></div>{dnsRecords.length ? <div className="dns-table"><div>name | class | TTL | type | data</div>{dnsRecords.map((record) => <div key={`${record.type}-${record.data}`}>{record.name} | IN | {record.ttl ?? '—'} | {record.type} | {record.data}</div>)}</div> : <p className="empty">Offline or no records. Try localhost.</p>}</section>
@@ -474,14 +495,14 @@ function RequestView({ exchange, loadWire }: { exchange?: WireExchange; loadWire
   </> : <p className="empty">Send a request to inspect the exact request bytes.</p>}</section></div>;
 }
 
-function ResponseView({ exchange, contentType, bodyText, htmlPreview, loadWire }: { exchange?: WireExchange; contentType: string; bodyText: string; htmlPreview?: string; loadWire: (id: string) => Promise<WireExchange> }): JSX.Element {
+function ResponseView({ exchange, contentType, bodyText, htmlPreview, loadWire, attemptIndex }: { attemptIndex: number; exchange?: WireExchange; contentType: string; bodyText: string; htmlPreview?: string; loadWire: (id: string) => Promise<WireExchange> }): JSX.Element {
   const [loadedResponse, setLoadedResponse] = useState<WireResponse>();
   const [loading, setLoading] = useState(false);
   useEffect(() => { setLoadedResponse(undefined); setLoading(false); }, [exchange?.id]);
   const response = loadedResponse ?? exchange?.response;
   const cachedResponse = exchange?.cacheResponse;
   const representation = response?.statusCode === 304 ? cachedResponse ?? response : response;
-  const [bodyTab, setBodyTab] = useState('rendered');
+  const [bodyTab, setBodyTab] = useState(htmlPreview ? 'snapshot' : 'rendered');
   const status = response ? statusMeaning(response.statusCode) : undefined;
   const image = contentType.startsWith('image/');
   const renderedImage = image && Boolean(representation?.decodedBody.base64) && !representation?.decodedBody.truncated;
@@ -505,15 +526,57 @@ function ResponseView({ exchange, contentType, bodyText, htmlPreview, loadWire }
       <div className="section-label">Response headers</div>
       <div className="headers-table">{response.headers.map((header, index) => <div className="response-header" key={`${index}-${header.name}`} title={RESPONSE_HEADER_REFERENCE[header.name] ?? REQUEST_HEADER_REFERENCE[header.name] ?? 'HTTP header'}><code>{header.name}</code><span>{header.value}</span></div>)}</div>
     </> : <p className="empty">No response yet.</p>}</section>
-    {response && <section className="panel body-panel"><div className="body-tabs">{['rendered', 'raw', 'hex', 'chunks'].map((tab) => <button className={bodyTab === tab ? 'active' : ''} key={tab} onClick={() => setBodyTab(tab)}>{tab}</button>)}</div>
+    {response && <section className="panel body-panel"><div className="body-tabs">{['rendered', 'snapshot', 'raw', 'hex', 'chunks'].map((tab) => <button className={bodyTab === tab ? 'active' : ''} key={tab} onClick={() => setBodyTab(tab)}>{tab}</button>)}</div>
       {response.largeBody && !loadedResponse && <div className="large-wire-note"><span>Large response wire is summarized to keep the renderer responsive.</span><button className="small-button" disabled={loading} onClick={() => void loadFullResponse()}>{loading ? 'Loading…' : 'Load full response wire'}</button></div>}
-      {bodyTab === 'rendered' && (image ? renderedImage ? <img className="image-preview" src={`data:${contentType};base64,${representation?.decodedBody.base64}`} /> : <p className="empty">This image is too large to render in the UI ({(representation?.decodedBody.length ?? 0).toLocaleString()} bytes).</p> : contentType.includes('text/html') ? <iframe className="render-frame" sandbox="" srcDoc={htmlPreview ?? textPreview(representation?.decodedBody).text} title="Sandboxed response preview" /> : <pre className="body-output">{contentType.includes('json') ? jsonBody(representation) : bodyText}</pre>)}
+      {bodyTab === 'rendered' && (image ? renderedImage ? <img className="image-preview" src={`data:${contentType};base64,${representation?.decodedBody.base64}`} /> : <p className="empty">This image is too large to render in the UI ({(representation?.decodedBody.length ?? 0).toLocaleString()} bytes).</p> : contentType.includes('text/html') && exchange && !exchange.request.requestLine.startsWith('HEAD ') ? <LivePreview exchangeId={exchange.id} attemptIndex={attemptIndex} /> : <pre className="body-output">{contentType.includes('json') ? jsonBody(representation) : bodyText}</pre>)}
+      {bodyTab === 'snapshot' && (contentType.includes('text/html') ? <iframe className="render-frame" sandbox="" srcDoc={htmlPreview ?? textPreview(representation?.decodedBody).text} title="Static response snapshot" /> : <pre className="body-output">{bodyText}</pre>)}
       {bodyTab === 'raw' && <pre className="body-output">{visible(bodyPreview.text)}{bodyPreview.truncated ? '\n… raw body preview truncated' : ''}</pre>}
       {bodyTab === 'hex' && <pre className="body-output">{hexDump(decodePrefix(response.body), response.body.length)}</pre>}
       {bodyTab === 'chunks' && <div className="chunk-view"><div className="chunk-summary">{response.chunks.length} chunks · decoded total <strong>{response.chunks.reduce((sum, chunk) => sum + chunk.sizeDecimal, 0)} bytes</strong> · course example expects 10h + 6h = 22</div>{response.chunks.map((chunk, index) => <div className="chunk-row" key={index}><code>{chunk.sizeHex}</code><span>{chunk.sizeDecimal}</span><pre>{text(chunk.data)}</pre><small>{chunk.extension ?? ''}</small></div>)}{response.trailers.length > 0 && <div className="trailers">Trailers: {response.trailers.map((header) => `${header.name}: ${header.value}`).join(' · ')}</div>}</div>}
     </section>}
     {response && <section className="panel"><div className="panel-title">Raw response wire</div><pre className="wire">{visible(rawPreview.text)}{rawPreview.truncated ? '\n… raw response wire preview truncated' : ''}</pre><div className="compression-note">compressed {response.compressedBody.length} B · decoded {response.decodedBody.length} B</div></section>}
   </div>;
+}
+
+function LivePreview({ exchangeId, attemptIndex }: { exchangeId: string; attemptIndex: number }): JSX.Element {
+  const container = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const token = crypto.randomUUID();
+    let cancelled = false;
+    let frame = 0;
+    let lastBounds = '';
+    const measure = () => {
+      const rect = container.current!.getBoundingClientRect();
+      const x = Math.max(0, rect.left);
+      const y = Math.max(0, rect.top);
+      return { x, y, width: Math.max(0, Math.min(innerWidth, rect.right) - x), height: Math.max(0, Math.min(innerHeight, rect.bottom) - y) };
+    };
+    const updateBounds = () => {
+      if (cancelled || !container.current) return;
+      const bounds = measure();
+      const serialized = JSON.stringify(bounds);
+      if (serialized !== lastBounds) {
+        lastBounds = serialized;
+        void window.httpLab.setLivePageBounds(token, bounds).catch(() => {});
+      }
+      frame = requestAnimationFrame(updateBounds);
+    };
+    setError('');
+    void window.httpLab.openLivePage(exchangeId, attemptIndex, token, measure()).catch(caught => {
+      if (!cancelled) {
+        void window.httpLab.closeLivePage(token).catch(() => {});
+        setError(caught instanceof Error ? caught.message : String(caught));
+      }
+    });
+    frame = requestAnimationFrame(updateBounds);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      void window.httpLab.closeLivePage(token).catch(() => {});
+    };
+  }, [exchangeId, attemptIndex]);
+  return <div className="embedded-preview" ref={container} aria-label="Interactive rendered response">{error ? <p className="error-banner">{error}</p> : <p className="empty">Rendering page…</p>}</div>;
 }
 
 function TimelineView({ events }: { events: any[] }): JSX.Element {

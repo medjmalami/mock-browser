@@ -411,6 +411,24 @@ export class OriginApplication {
     const pathname = url.pathname;
     if (pathname === '/admin') return responseText(403, '403 Forbidden: /admin is disabled\n');
 
+    if (pathname === '/live-demo' || pathname === '/live-demo.css' || pathname === '/live-demo.js') {
+      const notAllowed = allowedMethod(request.method, 'GET, HEAD');
+      if (notAllowed) return notAllowed;
+      const resources: Record<string, [string, string]> = {
+        '/live-demo': ['text/html', '<!doctype html><html><head><meta charset="utf-8"><title>HTTP Lab live page</title><link rel="stylesheet" href="/live-demo.css"><script defer src="/live-demo.js"></script></head><body><main><h1>JavaScript + CSS</h1><p id="script-status">Waiting for JavaScript...</p><button id="counter" type="button">Clicked 0 times</button><h2>Submit a real form</h2><form method="post" action="/login.cgi"><label>Username <input name="username" value="mohamed" required></label><label>Password <input type="password" name="password" value="hkm4c" required></label><button type="submit">Login</button></form><p>Inspect the HTML, CSS, JavaScript and form POST in HTTP Lab.</p></main></body></html>'],
+        '/live-demo.css': ['text/css', 'body{font:18px system-ui;background:#eef4ff;color:#183153;margin:3rem}main{max-width:640px;margin:auto;padding:2rem;background:white;border-radius:16px}h1{color:rgb(37,99,235)}label{display:block;margin:1rem 0}input,button{font:inherit;padding:.5rem}button{cursor:pointer}'],
+        '/live-demo.js': ['text/javascript', 'document.querySelector("#script-status").textContent="JavaScript loaded and running";let count=0;document.querySelector("#counter").addEventListener("click",event=>{event.currentTarget.textContent="Clicked "+(++count)+" times";});'],
+      };
+      const [contentType, body] = resources[pathname];
+      return { statusCode: 200, headers: [header('Content-Type', `${contentType}; charset=utf-8`), header('Cache-Control', 'no-store')], body: bytes(body) };
+    }
+
+    if (pathname === '/login') {
+      const notAllowed = allowedMethod(request.method, 'GET, HEAD');
+      if (notAllowed) return notAllowed;
+      return { statusCode: 200, headers: [header('Content-Type', 'text/html; charset=utf-8'), header('Cache-Control', 'no-store')], body: bytes('<!doctype html><html><body><h1>Course login</h1><form method="post" action="/login.cgi"><label>Username <input name="username" value="mohamed" required></label><label>Password <input type="password" name="password" value="hkm4c" required></label><button type="submit">Submit</button></form></body></html>\n') };
+    }
+
     if (pathname === '/login.cgi') {
       const notAllowed = allowedMethod(request.method, 'POST');
       if (notAllowed) return notAllowed;

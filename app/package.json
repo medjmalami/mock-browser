@@ -11,7 +11,7 @@
     "dev:renderer": "vite --host 127.0.0.1 --config vite.config.ts",
     "start:electron": "ELECTRON_RENDERER_URL=http://127.0.0.1:5173 electron dist/main.js",
     "start": "electron dist/main.js",
-    "test": "node --test",
+    "test": "npm run build:main && node --test test/*.test.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

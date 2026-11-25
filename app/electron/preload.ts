@@ -1,7 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { RequestOptions } from '@http-lab/client-core';
 
+export type PreviewBounds = { x: number; y: number; width: number; height: number };
+
 export type LabApi = {
+  openLivePage(exchangeId: string, attemptIndex: number, token: string, bounds: PreviewBounds): Promise<void>;
+  setLivePageBounds(token: string, bounds: PreviewBounds): Promise<void>;
+  closeLivePage(token: string): Promise<void>;
   request(options: RequestOptions): Promise<unknown>;
   requestWire(id: string): Promise<unknown>;
   exchangeWire(id: string): Promise<unknown>;
@@ -19,6 +24,9 @@ export type LabApi = {
 };
 
 const api: LabApi = {
+  openLivePage: (exchangeId, attemptIndex, token, bounds) => ipcRenderer.invoke('lab:live-page:open', { exchangeId, attemptIndex, token, bounds }),
+  setLivePageBounds: (token, bounds) => ipcRenderer.invoke('lab:live-page:bounds', { token, bounds }),
+  closeLivePage: token => ipcRenderer.invoke('lab:live-page:close', token),
   request: (options) => ipcRenderer.invoke('lab:request', options),
   requestWire: (id) => ipcRenderer.invoke('lab:request-wire', id),
   exchangeWire: (id) => ipcRenderer.invoke('lab:exchange-wire', id),
