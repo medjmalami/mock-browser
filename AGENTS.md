@@ -20,7 +20,7 @@ HTTP Lab is an Electron teaching application for ISIMS “Chapitre II: Protocole
 - Preserve deliberate CRLF bytes, header order, header casing, request-target form, and raw wire captures.
 - Networking belongs in the Electron main process or `client-core`, never in the renderer.
 - Keep Electron security enabled: `contextIsolation: true`, `nodeIntegration: false`, sandboxed renderer, and a small typed preload API.
-- Render server HTML only in a sandboxed iframe with scripts disabled.
+- Keep static response HTML in a sandboxed iframe with scripts disabled. The rendered response panel embeds a WebContentsView that may execute scripts in its separate sandboxed session, with no preload or Node access; HTTP/HTTPS traffic must pass through the main-process raw client and remain inspectable.
 - Bind lab services to `127.0.0.1` only. The proxy CONNECT allow-list must remain limited to the local origin and echo service.
 - Keep the standalone server defaults: origin `8080`, proxy `8888`, echo `9000`.
 - Electron defaults the echo service to `9001` to coexist with common Docker mappings; override it with `HTTP_LAB_ECHO_PORT=9000` when needed.

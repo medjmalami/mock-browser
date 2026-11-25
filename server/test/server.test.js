@@ -203,3 +203,30 @@ function rawRequest(port, request) {
   });
 }
 
+
+test('login page provides a form whose submission creates a session; HEAD preserves framing', async () => {
+  const app = new OriginApplication();
+  const page = await app.route(parsedRequest('GET /login HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+  assert.equal(page.statusCode, 200);
+  assert.match(page.body.toString(), /<form method="post" action="\/login.cgi">/);
+  assert.match(page.body.toString(), /name="username"/);
+  assert.match(page.body.toString(), /name="password"/);
+  const head = await app.route(parsedRequest('HEAD /login HTTP/1.1\r\nHost: localhost\r\n\r\n'));
+  const response = parseCompleteResponse(app.standardize('HTTP/1.1', head, false, true), 'HEAD', true);
+  assert.equal(response.body.length, 0);
+  assert.equal(response.headers.find(h => h.name === 'Content-Length').value, String(page.body.length));
+  const body = new URLSearchParams({ username: 'mohamed', password: 'hkm4c' }).toString();
+  const submitted = await app.route(parsedRequest(`POST /login.cgi HTTP/1.1\r\nHost: localhost\r\nReferer: http://localhost/login\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`));
+  assert.equal(submitted.statusCode, 201);
+  assert.ok(submitted.headers.some(h => h.name === 'Set-Cookie'));
+});
+
+test('live demo serves external CSS and JavaScript with browser MIME types', async () => {
+  const app = new OriginApplication();
+  for (const [target, type] of [['/live-demo', 'text/html'], ['/live-demo.css', 'text/css'], ['/live-demo.js', 'text/javascript']]) {
+    const result = await app.route(parsedRequest(`GET ${target} HTTP/1.1\r\nHost: localhost\r\n\r\n`));
+    assert.equal(result.statusCode, 200);
+    assert.equal(result.headers.find(h => h.name === 'Content-Type').value, `${type}; charset=utf-8`);
+    assert.ok(result.body.length);
+  }
+});
