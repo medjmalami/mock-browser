@@ -190,6 +190,15 @@ function RequestBodyEditor({
 }
 
 export default function App(): JSX.Element {
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    try { return localStorage.getItem('http-lab-theme') === 'light' ? 'light' : 'dark'; }
+    catch { return 'dark'; }
+  });
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem('http-lab-theme', theme); }
+    catch { /* Theme switching still works when storage is unavailable. */ }
+  }, [theme]);
   const [method, setMethod] = useState<HttpMethod>('GET');
   const [url, setUrl] = useState('http://127.0.0.1:8080/');
   const [version, setVersion] = useState<HttpVersion>('HTTP/1.1');
@@ -402,7 +411,7 @@ export default function App(): JSX.Element {
   const matchesReference = (value: string) => value.toLowerCase().includes(referenceQuery.trim().toLowerCase());
 
   return <main className="app-shell">
-    <header className="topbar"><div className="brand"><span className="brand-mark">↔</span><div><strong>HTTP Lab</strong><small>Chapitre II · Protocol microscope</small></div></div><div className="service-state"><span className="live-dot" /> origin 8080 · proxy 8888 · echo 9001</div><ScenarioMenu onSelect={selectScenario} /></header>
+    <header className="topbar"><div className="brand"><span className="brand-mark">↔</span><div><strong>HTTP Lab</strong><small>Chapitre II · Protocol microscope</small></div></div><div className="service-state"><span className="live-dot" /> origin 8080 · proxy 8888 · echo 9001</div><label>Theme <select aria-label="Theme" value={theme} onChange={event => setTheme(event.target.value as 'dark' | 'light')}><option value="dark">Dark</option><option value="light">Light</option></select></label><ScenarioMenu onSelect={selectScenario} /></header>
     <section className="request-bar panel">
       <select value={method} onChange={(event) => setMethod(event.target.value as HttpMethod)}>{METHODS.map((item) => <option key={item} value={item}>{item}</option>)}</select>
       <input className="url-input" value={url} onChange={(event) => setUrl(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void send(); }} />

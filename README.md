@@ -18,6 +18,8 @@ Ports are configurable with `HTTP_LAB_ORIGIN_PORT`, `HTTP_LAB_PROXY_PORT`, and `
 
 ## Project layout
 
+Use the **Theme** selector in the top bar to switch between **Dark** and **Light**. Your choice is saved locally between launches; dark is the initial default.
+
 - `server/` contains the handwritten origin server, allow-listed proxy, TCP echo service, static resources, CRUD/session/auth routes, cache behavior, and structured logs. It does not use `node:http`, Express, `fetch`, or XMLHttpRequest.
 - `client-core/` contains the request serializer, incremental parser, raw socket client, connection pool, pipelining, redirect/auth helpers, cache, cookie jar, and DNS records.
 - `app/` contains the Electron main process, secure preload bridge, and React/Vite teaching interface.
